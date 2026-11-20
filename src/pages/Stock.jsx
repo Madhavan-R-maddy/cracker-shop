@@ -23,6 +23,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
 
   // Bulk Selection & Delete states
+  const [isDeleteMode, setIsDeleteMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [isDeleteSelectedModalOpen, setIsDeleteSelectedModalOpen] = useState(false);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
@@ -102,6 +103,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       const count = selectedIds.length;
       setSelectedIds([]);
       setIsDeleteSelectedModalOpen(false);
+      setIsDeleteMode(false);
       setBulkDeleteSuccess(`Successfully deleted ${count} ${count === 1 ? 'cracker' : 'crackers'} from stock.`);
       setTimeout(() => setBulkDeleteSuccess(''), 4000);
       if (onRefresh) onRefresh();
@@ -125,6 +127,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       await deleteAllProducts();
       setSelectedIds([]);
       setIsDeleteAllModalOpen(false);
+      setIsDeleteMode(false);
       setDeleteAllConfirmText('');
       setBulkDeleteSuccess(`All ${totalCount} crackers permanently deleted from stock.`);
       setTimeout(() => setBulkDeleteSuccess(''), 4000);
@@ -460,6 +463,21 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
             <span className="material-symbols-outlined text-[18px]">add</span>
             <span>Add Cracker</span>
           </button>
+
+          {!isDeleteMode && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsDeleteMode(true);
+                setBulkDeleteError('');
+                setBulkDeleteSuccess('');
+              }}
+              className="inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-1.5 rounded-md bg-light-surface-container-lowest border-2 border-bright-red text-bright-red font-label text-xs sm:text-sm font-bold hover:bg-bright-red hover:text-white transition-colors shadow-xs"
+            >
+              <span className="material-symbols-outlined text-[18px]">delete</span>
+              <span>Delete</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -530,45 +548,68 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       </div>
 
       {/* ------------------------------------------------------------- */}
-      {/* BULK ACTION BAR: Visible when 1 or more items are selected     */}
+      {/* DELETE MODE ACTION BAR: Visible while in Delete Mode          */}
       {/* ------------------------------------------------------------- */}
-      {selectedIds.length > 0 && (
-        <div className="bg-red-50 border-2 border-bright-red/40 rounded-lg p-3 sm:p-4 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
+      {isDeleteMode && (
+        <div className="bg-red-50 border-2 border-bright-red/50 rounded-lg p-3 sm:p-4 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
           <div className="flex items-center gap-2.5">
-            <span className="w-7 h-7 rounded-full bg-bright-red text-white flex items-center justify-center font-mono text-xs font-bold shrink-0">
+            <span className="w-8 h-8 rounded-full bg-bright-red text-white flex items-center justify-center font-mono text-xs sm:text-sm font-bold shrink-0 shadow-xs">
               {selectedIds.length}
             </span>
-            <span className="font-label text-xs sm:text-sm font-bold text-light-on-surface">
-              {selectedIds.length} {selectedIds.length === 1 ? 'cracker' : 'crackers'} selected
-              {filteredProducts.length !== products.length && (
-                <span className="text-light-on-surface-variant font-normal ml-1">
-                  (of {filteredProducts.length} shown)
-                </span>
-              )}
-            </span>
+            <div className="flex flex-col">
+              <span className="font-label text-xs sm:text-sm font-bold text-light-on-surface">
+                {selectedIds.length} selected
+                {filteredProducts.length !== products.length && (
+                  <span className="text-light-on-surface-variant font-normal ml-1">
+                    (of {filteredProducts.length} shown)
+                  </span>
+                )}
+              </span>
+              <span className="font-body text-[11px] text-light-on-surface-variant">
+                Select crackers below or choose Delete All Stock
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-            <button
-              type="button"
-              onClick={handleClearSelection}
-              disabled={isBulkDeleting}
-              className="min-h-10 px-3.5 py-1.5 rounded-md bg-white border border-light-outline-variant font-label text-xs font-bold text-light-on-surface hover:bg-light-surface-container transition-colors disabled:opacity-50"
-            >
-              Clear selection
-            </button>
-
+          <div className="flex flex-wrap items-center gap-2 justify-end">
             <button
               type="button"
               onClick={() => {
                 setBulkDeleteError('');
                 setIsDeleteSelectedModalOpen(true);
               }}
-              disabled={isBulkDeleting}
-              className="min-h-10 px-4 py-1.5 rounded-md bg-bright-red text-white font-label text-xs font-bold hover:opacity-90 active:scale-98 transition-all flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              disabled={selectedIds.length === 0 || isBulkDeleting}
+              className="min-h-10 px-4 py-2 rounded-md bg-bright-red text-white font-label text-xs sm:text-sm font-bold hover:opacity-90 active:scale-98 transition-all flex items-center gap-1.5 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <span className="material-symbols-outlined text-[18px]">delete</span>
-              <span>Delete Selected ({selectedIds.length})</span>
+              <span>Delete Selected{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteAllConfirmText('');
+                setBulkDeleteError('');
+                setIsDeleteAllModalOpen(true);
+              }}
+              disabled={products.length === 0 || isBulkDeleting}
+              className="min-h-10 px-3.5 py-2 rounded-md bg-white border-2 border-bright-red text-bright-red font-label text-xs sm:text-sm font-bold hover:bg-bright-red hover:text-white transition-colors shadow-xs disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">delete_forever</span>
+              <span>Delete All Stock</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsDeleteMode(false);
+                setSelectedIds([]);
+                setBulkDeleteError('');
+              }}
+              disabled={isBulkDeleting}
+              className="min-h-10 px-3.5 py-2 rounded-md bg-white border border-light-outline-variant font-label text-xs sm:text-sm font-bold text-light-on-surface hover:bg-light-surface-container transition-colors disabled:opacity-50"
+            >
+              Cancel
             </button>
           </div>
         </div>
@@ -582,20 +623,22 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
           <table className="w-full text-left border-collapse">
             <thead className="bg-light-primary-container text-deep-green border-b border-gold-border">
               <tr>
-                {/* Select All Checkbox */}
-                <th scope="col" className="w-12 px-3 py-3 text-center">
-                  <div className="flex items-center justify-center">
-                    <input
-                      type="checkbox"
-                      checked={isAllSelected}
-                      ref={el => { if (el) el.indeterminate = isSomeSelected && !isAllSelected; }}
-                      onChange={handleToggleSelectAll}
-                      className="w-4 h-4 rounded text-gold focus:ring-gold border-gold-border cursor-pointer accent-gold"
-                      title={isAllSelected ? "Deselect all shown" : "Select all currently shown"}
-                      aria-label="Select all shown crackers"
-                    />
-                  </div>
-                </th>
+                {/* Select All Checkbox - Only visible in Delete Mode */}
+                {isDeleteMode && (
+                  <th scope="col" className="w-12 px-3 py-3 text-center">
+                    <div className="flex items-center justify-center">
+                      <input
+                        type="checkbox"
+                        checked={isAllSelected}
+                        ref={el => { if (el) el.indeterminate = isSomeSelected && !isAllSelected; }}
+                        onChange={handleToggleSelectAll}
+                        className="w-4 h-4 rounded text-gold focus:ring-gold border-gold-border cursor-pointer accent-gold"
+                        title={isAllSelected ? "Deselect all shown" : "Select all currently shown"}
+                        aria-label="Select all shown crackers"
+                      />
+                    </div>
+                  </th>
+                )}
                 <th scope="col" className="px-3 py-3 font-label text-xs font-bold uppercase tracking-wider">
                   Cracker Name
                 </th>
@@ -617,9 +660,12 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                 <th scope="col" className="px-3 py-3 text-center font-label text-xs font-bold uppercase tracking-wider">
                   Demo Video
                 </th>
-                <th scope="col" className="px-4 py-3 text-center font-label text-xs font-bold uppercase tracking-wider">
-                  Actions
-                </th>
+                {/* Actions column - Only visible in Normal View (hidden in Delete Mode) */}
+                {!isDeleteMode && (
+                  <th scope="col" className="px-4 py-3 text-center font-label text-xs font-bold uppercase tracking-wider">
+                    Actions
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-light-outline-variant">
@@ -632,7 +678,12 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                   return (
                     <tr 
                       key={p.id}
+                      onClick={() => {
+                        if (isDeleteMode) handleToggleSelect(p.id);
+                      }}
                       className={`hover:bg-gold-soft/50 transition-colors ${
+                        isDeleteMode ? 'cursor-pointer' : ''
+                      } ${
                         isSelected 
                           ? 'bg-gold-soft/60' 
                           : isOutOfStock 
@@ -640,19 +691,21 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                             : ''
                       }`}
                     >
-                      {/* Row Checkbox */}
-                      <td className="w-12 px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center justify-center">
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => handleToggleSelect(p.id)}
-                            className="w-4 h-4 rounded text-gold focus:ring-gold border-gold-border cursor-pointer accent-gold"
-                            title={`Select ${p.name}`}
-                            aria-label={`Select ${p.name}`}
-                          />
-                        </div>
-                      </td>
+                      {/* Row Checkbox - Only in Delete Mode */}
+                      {isDeleteMode && (
+                        <td className="w-12 px-3 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => handleToggleSelect(p.id)}
+                              className="w-4 h-4 rounded text-gold focus:ring-gold border-gold-border cursor-pointer accent-gold"
+                              title={`Select ${p.name}`}
+                              aria-label={`Select ${p.name}`}
+                            />
+                          </div>
+                        </td>
+                      )}
                       <td className="px-3 py-3">
                         <div className="flex flex-col">
                           <span className="font-title text-sm font-bold text-light-on-surface">
@@ -695,7 +748,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                       <td className="px-3 py-3 text-right font-mono text-xs text-light-on-surface-variant tabular-nums">
                         {p.low_stock_level}
                       </td>
-                      <td className="px-3 py-3 text-center">
+                      <td className="px-3 py-3 text-center" onClick={(e) => isDeleteMode && e.stopPropagation()}>
                         <button
                           type="button"
                           onClick={() => setSelectedVideoCracker(p)}
@@ -711,31 +764,34 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                           </span>
                         </button>
                       </td>
-                      <td className="px-4 py-3 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(p)}
-                            className="px-2.5 py-1 rounded bg-gold-soft text-deep-green border border-gold-border font-label text-xs font-bold hover:bg-gold hover:text-on-gold transition-colors"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(p)}
-                            className="w-8 h-8 rounded text-bright-red hover:bg-red-soft inline-flex items-center justify-center transition-colors"
-                            title="Delete Cracker"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">delete</span>
-                          </button>
-                        </div>
-                      </td>
+                      {/* Actions cell - Only in Normal View (hidden in Delete Mode) */}
+                      {!isDeleteMode && (
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(p)}
+                              className="px-2.5 py-1 rounded bg-gold-soft text-deep-green border border-gold-border font-label text-xs font-bold hover:bg-gold hover:text-on-gold transition-colors"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(p)}
+                              className="w-8 h-8 rounded text-bright-red hover:bg-red-soft inline-flex items-center justify-center transition-colors"
+                              title="Delete Cracker"
+                            >
+                              <span className="material-symbols-outlined text-[18px]">delete</span>
+                            </button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-light-on-surface-variant">
+                  <td colSpan={8} className="px-4 py-12 text-center text-light-on-surface-variant">
                     <div className="flex flex-col items-center gap-2">
                       <span className="material-symbols-outlined text-[40px] text-gold">inventory_2</span>
                       <p className="font-title text-sm font-bold">No crackers match your search or filter</p>
@@ -759,10 +815,10 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       {/* 2. MOBILE CARD VIEW (< 768px) with Touch Tap Targets          */}
       {/* ------------------------------------------------------------- */}
       <div className="md:hidden flex flex-col gap-2.5">
-        {/* Mobile Select-All header strip */}
-        {filteredProducts.length > 0 && (
+        {/* Mobile Select-All header strip - Only visible in Delete Mode */}
+        {isDeleteMode && filteredProducts.length > 0 && (
           <div className="flex items-center justify-between p-2.5 bg-light-surface-container-lowest border border-gold-border rounded-lg shadow-xs">
-            <label className="flex items-center gap-2.5 min-h-[40px] px-1 cursor-pointer select-none">
+            <label className="flex items-center gap-2.5 min-h-[44px] px-1 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={isAllSelected}
@@ -790,7 +846,12 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
             return (
               <div 
                 key={p.id}
+                onClick={() => {
+                  if (isDeleteMode) handleToggleSelect(p.id);
+                }}
                 className={`p-3.5 rounded-lg border transition-all ${
+                  isDeleteMode ? 'cursor-pointer' : ''
+                } ${
                   isSelected 
                     ? 'bg-gold-soft/60 border-gold-border shadow-xs' 
                     : isOutOfStock 
@@ -799,19 +860,21 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                 }`}
               >
                 <div className="flex items-start gap-2.5">
-                  {/* Large Mobile Tap Target Checkbox (min 44x44px touch area) */}
-                  <label 
-                    className="min-w-[44px] min-h-[44px] -ml-2 -mt-2 flex items-center justify-center cursor-pointer select-none shrink-0"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => handleToggleSelect(p.id)}
-                      className="w-5 h-5 rounded text-gold focus:ring-gold border-gold-border cursor-pointer accent-gold"
-                      aria-label={`Select ${p.name}`}
-                    />
-                  </label>
+                  {/* Large Mobile Tap Target Checkbox (min 44x44px touch area) - Only in Delete Mode */}
+                  {isDeleteMode && (
+                    <label 
+                      className="min-w-[44px] min-h-[44px] -ml-2 -mt-2 flex items-center justify-center cursor-pointer select-none shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelect(p.id)}
+                        className="w-5 h-5 rounded text-gold focus:ring-gold border-gold-border cursor-pointer accent-gold"
+                        aria-label={`Select ${p.name}`}
+                      />
+                    </label>
+                  )}
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-2">
@@ -852,32 +915,37 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                       </div>
 
                       {/* Card Actions */}
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1" onClick={(e) => isDeleteMode && e.stopPropagation()}>
                         {p.video_url && (
                           <button
                             type="button"
                             onClick={() => setSelectedVideoCracker(p)}
-                            className="w-8 h-8 rounded bg-peacock-soft text-peacock-blue flex items-center justify-center shrink-0"
+                            className="min-w-[40px] min-h-[40px] rounded bg-peacock-soft text-peacock-blue flex items-center justify-center shrink-0"
                             title="Demo video"
                           >
-                            <span className="material-symbols-outlined text-[18px]">play_circle</span>
+                            <span className="material-symbols-outlined text-[20px]">play_circle</span>
                           </button>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => handleOpenEdit(p)}
-                          className="px-2.5 py-1 rounded bg-gold-soft text-deep-green border border-gold-border font-label text-xs font-bold"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDelete(p)}
-                          className="w-8 h-8 rounded text-bright-red hover:bg-red-soft flex items-center justify-center shrink-0"
-                          title="Delete Cracker"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">delete</span>
-                        </button>
+                        {/* Edit and Delete buttons - Only in Normal View (hidden in Delete Mode) */}
+                        {!isDeleteMode && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(p)}
+                              className="min-h-[36px] px-2.5 py-1 rounded bg-gold-soft text-deep-green border border-gold-border font-label text-xs font-bold"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(p)}
+                              className="min-w-[36px] min-h-[36px] rounded text-bright-red hover:bg-red-soft flex items-center justify-center shrink-0"
+                              title="Delete Cracker"
+                            >
+                              <span className="material-symbols-outlined text-[18px]">delete</span>
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -891,40 +959,6 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
             <p className="font-title text-sm font-bold mt-1">No crackers match your search</p>
           </div>
         )}
-      </div>
-
-      {/* ------------------------------------------------------------- */}
-      {/* 3. DANGER ZONE: DELETE ALL STOCK (Safely placed at bottom)      */}
-      {/* ------------------------------------------------------------- */}
-      <div className="mt-6 pt-5 border-t border-light-outline-variant">
-        <div className="p-4 rounded-lg bg-red-50/60 border border-bright-red/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-bright-red/10 text-bright-red flex items-center justify-center shrink-0">
-              <span className="material-symbols-outlined text-[24px]">warning</span>
-            </div>
-            <div>
-              <p className="font-title text-sm font-bold text-light-on-surface">
-                Danger Zone: Delete All Stock
-              </p>
-              <p className="font-body text-xs text-light-on-surface-variant">
-                Permanently wipes all {products.length} crackers in the store database. Customer bills and sales history remain 100% safe.
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setDeleteAllConfirmText('');
-              setBulkDeleteError('');
-              setIsDeleteAllModalOpen(true);
-            }}
-            disabled={products.length === 0 || isBulkDeleting}
-            className="min-h-[42px] px-4 py-2 rounded-md bg-white border-2 border-bright-red text-bright-red font-label text-xs font-bold hover:bg-bright-red hover:text-white transition-colors shadow-xs shrink-0 disabled:opacity-40"
-          >
-            Delete All Stock ({products.length})
-          </button>
-        </div>
       </div>
 
       {/* ---------------------------------------------------- */}
