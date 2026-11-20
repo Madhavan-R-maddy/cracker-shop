@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import { createBill } from '../lib/supabase';
 import QrScannerModal from '../components/QrScannerModal';
@@ -20,6 +20,12 @@ export default function Billing({
   // Bill Items: [{ id, product_id, name, rate, qty, stock }]
   const [items, setItems] = useState([]);
   const [discountPercent, setDiscountPercent] = useState(0);
+
+  // Reference to latest products list to avoid stale closure lookups
+  const productsRef = useRef(products);
+  useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
 
   // Search & input
   const [searchQuery, setSearchQuery] = useState('');
@@ -115,39 +121,85 @@ export default function Billing({
     setShowManualAdd(false);
   }
 
-  // QR Code scanned
+  // Continuous QR Code scanner lookup & add handler
   function handleQrScan(decodedCode) {
-    const cleanCode = decodedCode.trim().toLowerCase();
-    // Look up by qr_code or by name or id
-    const found = products.find(p => 
-      (p.qr_code && p.qr_code.toLowerCase() === cleanCode) ||
-      p.name.toLowerCase() === cleanCode ||
-      p.id === cleanCode
-    );
+    if (!decodedCode) return { success: false, code: '' };
+    const rawTrimmed = decodedCode.trim();
 
-    if (found) {
-      addItemFromProduct(found, 1);
-    } else {
-      // If code not matched directly in catalog, offer to add as named item
-      setItems(prev => {
-        const exist = prev.find(i => i.name.toLowerCase() === cleanCode);
-        if (exist) {
-          return prev.map(i => i.name.toLowerCase() === cleanCode ? { ...i, qty: i.qty + 1 } : i);
+    // Extract code if encoded as URL or query parameter
+    let cleanCode = rawTrimmed;
+    try {
+      if (cleanCode.startsWith('http://') || cleanCode.startsWith('https://')) {
+        const url = new URL(cleanCode);
+        const param = url.searchParams.get('qr') || url.searchParams.get('code') || url.searchParams.get('c');
+        if (param) {
+          cleanCode = param.trim();
+        } else {
+          const parts = url.pathname.split('/').filter(Boolean);
+          if (parts.length > 0) cleanCode = parts[parts.length - 1].trim();
         }
-        return [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            product_id: null,
-            name: decodedCode,
-            rate: 100,
-            qty: 1,
-            unit: 'box',
-            stock: null
-          }
-        ];
-      });
+      }
+    } catch {}
+
+    const lower = cleanCode.toLowerCase();
+    const currentProducts = productsRef.current || [];
+
+    // Look up cracker by qr_code, id, or name (case-insensitive & whitespace-trimmed)
+    const found = currentProducts.find(p => {
+      const pQr = (p.qr_code || '').trim().toLowerCase();
+      const pName = (p.name || '').trim().toLowerCase();
+      const pId = (p.id || '').trim();
+
+      return (
+        (pQr && pQr === lower) ||
+        (pQr && lower.includes(pQr)) ||
+        (pQr && pQr.includes(lower)) ||
+        pId === rawTrimmed ||
+        pName === lower
+      );
+    });
+
+    if (!found) {
+      // If code does not match any cracker, do NOT add anything to the bill
+      return { success: false, code: rawTrimmed };
     }
+
+    let calculatedNewQty = 1;
+
+    setItems(prevItems => {
+      const existingIdx = prevItems.findIndex(i => i.product_id === found.id);
+      if (existingIdx !== -1) {
+        // Increment quantity and move to top of the list so newest scanned item is visible first
+        const updated = [...prevItems];
+        const currentQty = parseInt(updated[existingIdx].qty, 10) || 0;
+        calculatedNewQty = currentQty + 1;
+        const updatedItem = {
+          ...updated[existingIdx],
+          qty: calculatedNewQty,
+          lastScannedAt: Date.now()
+        };
+        updated.splice(existingIdx, 1);
+        return [updatedItem, ...updated];
+      }
+
+      // Add as new line item with quantity 1 (newest on top)
+      calculatedNewQty = 1;
+      return [
+        {
+          id: crypto.randomUUID(),
+          product_id: found.id,
+          name: found.name,
+          rate: parseFloat(found.price) || 0,
+          qty: 1,
+          unit: found.unit || 'box',
+          stock: found.quantity,
+          lastScannedAt: Date.now()
+        },
+        ...prevItems
+      ];
+    });
+
+    return { success: true, product: found, newQty: calculatedNewQty };
   }
 
   // Quantity updates
@@ -659,6 +711,7 @@ export default function Billing({
         onClose={() => setIsScannerOpen(false)}
         onScan={handleQrScan}
         products={products}
+        items={items}
       />
 
       {/* Customer Asked For Modal */}
