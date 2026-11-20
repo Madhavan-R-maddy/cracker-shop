@@ -1,5 +1,5 @@
 // Supabase Edge Function: parse-stock-list
-// Securely parses PDF, Word (.docx) or invoice images via the free Gemini API
+// Securely parses PDF, Word (.docx extracted text), or invoice images via the free Gemini API
 // Deno environment running on Supabase Edge
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -19,20 +19,26 @@ serve(async (req: Request) => {
     if (!GEMINI_API_KEY) {
       return new Response(
         JSON.stringify({
-          error: "GEMINI_API_KEY is not configured in Supabase Edge Function environment variables.",
+          error: "GEMINI_API_KEY is not configured in Supabase Edge Function secrets. Please add GEMINI_API_KEY in your Supabase project dashboard.",
         }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 500,
+          status: 400,
         }
       );
     }
 
-    const { fileBase64, mimeType, fileName } = await req.json();
+    // Read Gemini model from GEMINI_MODEL secret, defaulting to gemini-2.5-flash
+    const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-2.5-flash";
 
-    if (!fileBase64 || !mimeType) {
+    const body = await req.json();
+    const { fileBase64, mimeType, fileName, text } = body;
+
+    if (!text && (!fileBase64 || !mimeType)) {
       return new Response(
-        JSON.stringify({ error: "Missing fileBase64 or mimeType in request body." }),
+        JSON.stringify({ 
+          error: "Missing required document data. Provide either 'text' (extracted from .docx) or 'fileBase64' with 'mimeType' (for PDF/images)." 
+        }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
           status: 400,
@@ -45,8 +51,8 @@ You are an expert OCR & document parser for a wholesale/retail firecracker shop 
 Analyze the provided document (${fileName || "stock list"}) and extract every firecracker product listed.
 
 For each item, extract:
-1. "name": The clean, recognizable cracker name (string, e.g., "1000 Wala Garland", "30cm Color Sparklers", "Flower Pots Big")
-2. "quantity": Total units/boxes (integer number, default 1 if not specified)
+1. "name": The clean, recognizable cracker name (string, e.g., "1000 Wala Garland", "30cm Color Sparklers", "Flower Pots Big", "12 Shot Raider")
+2. "quantity": Total units or boxes in stock (integer number, default 1 if not specified)
 3. "price": Rate or unit price in INR (number, e.g. 240, 480; 0 if missing)
 4. "unit": Unit type, one of "box", "packet", or "piece" (default "box")
 5. "category": Best guess category like "Sparklers", "Garlands", "Aerial Shots", "Flower Pots", "Novelty", "Chakkars", etc.
@@ -64,21 +70,35 @@ Respond with ONLY a raw JSON array matching this schema:
 Do NOT include markdown backticks like \`\`\`json. Return only pure JSON array.
 `;
 
-    // Call Gemini API (Free 1.5 Flash / 2.0 Flash)
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    // Construct Gemini contents array based on whether text or fileBase64 was supplied
+    let contentsParts: any[] = [];
+
+    if (text) {
+      // Extracted text mode (e.g. from .docx via mammoth in browser)
+      contentsParts = [
+        {
+          text: `${promptText}\n\n=== DOCUMENT TEXT CONTENT (${fileName || 'Word Document'}) ===\n${text}`
+        }
+      ];
+    } else {
+      // Binary file mode (PDF or images)
+      contentsParts = [
+        { text: promptText },
+        {
+          inlineData: {
+            mimeType: mimeType,
+            data: fileBase64,
+          },
+        },
+      ];
+    }
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
     const geminiPayload = {
       contents: [
         {
-          parts: [
-            { text: promptText },
-            {
-              inlineData: {
-                mimeType: mimeType,
-                data: fileBase64,
-              },
-            },
-          ],
+          parts: contentsParts,
         },
       ],
       generationConfig: {
@@ -94,12 +114,21 @@ Do NOT include markdown backticks like \`\`\`json. Return only pure JSON array.
     });
 
     if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
+      let errDetail = "";
+      try {
+        const errJson = await geminiRes.json();
+        errDetail = errJson.error?.message || JSON.stringify(errJson);
+      } catch {
+        errDetail = await geminiRes.text();
+      }
+
       return new Response(
-        JSON.stringify({ error: `Gemini API error: ${errText}` }),
+        JSON.stringify({
+          error: `Gemini API error using model '${GEMINI_MODEL}' (${geminiRes.status}): ${errDetail}`,
+        }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: geminiRes.status,
+          status: 400,
         }
       );
     }
@@ -108,17 +137,41 @@ Do NOT include markdown backticks like \`\`\`json. Return only pure JSON array.
     const candidateText =
       geminiData.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
 
-    // Clean up potential backticks just in case
-    const cleanedText = candidateText.replace(/^```json\s*/i, "").replace(/\s*```$/i, "").trim();
-    const parsedItems = JSON.parse(cleanedText);
+    // Clean up potential markdown formatting backticks
+    const cleanedText = candidateText
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
 
-    return new Response(JSON.stringify({ items: parsedItems }), {
+    let parsedItems = [];
+    try {
+      parsedItems = JSON.parse(cleanedText);
+      if (!Array.isArray(parsedItems)) {
+        if (parsedItems && typeof parsedItems === 'object') {
+          // If Gemini wrapped items in a key like { items: [...] } or { products: [...] }
+          parsedItems = parsedItems.items || parsedItems.products || parsedItems.crackers || [parsedItems];
+        }
+      }
+    } catch (parseErr) {
+      return new Response(
+        JSON.stringify({ 
+          error: `Could not parse Gemini JSON output: ${cleanedText.slice(0, 300)}` 
+        }),
+        {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 400,
+        }
+      );
+    }
+
+    return new Response(JSON.stringify({ items: parsedItems, modelUsed: GEMINI_MODEL }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
       status: 200,
     });
   } catch (err: any) {
     return new Response(
-      JSON.stringify({ error: err.message || "Failed to parse document" }),
+      JSON.stringify({ error: `Function processing error: ${err.message || String(err)}` }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 500,

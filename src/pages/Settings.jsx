@@ -2,11 +2,11 @@ import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { hashPin } from '../lib/crypto';
 import { 
-  getSettings, 
+  getFreshPinHash,
+  updatePinHash,
   updateSettings, 
   addProduct, 
-  isSupabaseConfigured,
-  supabase
+  isSupabaseConfigured
 } from '../lib/supabase';
 
 export default function Settings({ 
@@ -71,10 +71,9 @@ export default function Settings({
 
     setSavingPin(true);
     try {
-      // Verify old PIN
+      // 1. Verify old PIN against Supabase fresh hash
+      const storedHash = await getFreshPinHash();
       const currentHashed = await hashPin(oldPin);
-      const currentSettings = await getSettings();
-      const storedHash = currentSettings?.pin_hash || '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4';
 
       if (currentHashed !== storedHash) {
         setPinError('Current PIN is incorrect.');
@@ -82,17 +81,19 @@ export default function Settings({
         return;
       }
 
-      // Hash and save new PIN
+      // 2. Hash and save new PIN to Supabase
       const newHash = await hashPin(newPin);
-      await updateSettings({ pin_hash: newHash });
+      await updatePinHash(newHash);
 
+      // Only show success when DB update truly succeeded
       setPinSuccess(true);
       setOldPin('');
       setNewPin('');
       setConfirmPin('');
       if (onRefresh) onRefresh();
     } catch (err) {
-      setPinError('Failed to change PIN: ' + err.message);
+      console.error('PIN change error:', err);
+      setPinError('Failed to change PIN: ' + (err.message || 'Database error'));
     } finally {
       setSavingPin(false);
     }
@@ -322,7 +323,7 @@ export default function Settings({
         </div>
 
         <p className="font-body text-xs text-light-on-surface-variant">
-          Access to this terminal is protected by a shared owner PIN (default: <strong>1234</strong>). The PIN is hashed with SHA-256 in Supabase.
+          Access to this terminal is protected by a shared owner PIN. The PIN is hashed with SHA-256 in Supabase.
         </p>
 
         <form onSubmit={handleChangePin} className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">

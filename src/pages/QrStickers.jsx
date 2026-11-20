@@ -70,7 +70,7 @@ export default function QrStickers({ products = [] }) {
   }
 
   return (
-    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full">
+    <div className="flex flex-col gap-6 max-w-7xl mx-auto w-full print:m-0 print:p-0 print:w-full print:max-w-none print:gap-0">
       {/* Action Header (Hidden in Print) */}
       <div className="no-print flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
@@ -200,23 +200,23 @@ export default function QrStickers({ products = [] }) {
       </div>
 
       {/* Printable Sheet Area */}
-      <div className="bg-white border-2 border-gold-border rounded-lg p-6 shadow-md print:border-none print:p-0 print:shadow-none">
+      <div className="bg-white border-2 border-gold-border rounded-lg p-6 shadow-md print:border-none print:p-0 print:m-0 print:shadow-none print:w-full">
         {allStickers.length === 0 ? (
-          <div className="py-16 text-center text-light-on-surface-variant flex flex-col items-center gap-2">
+          <div className="py-16 text-center text-light-on-surface-variant flex flex-col items-center gap-2 no-print">
             <span className="material-symbols-outlined text-[48px] text-gold">qr_code_2</span>
             <p className="font-title text-base">No crackers selected or all quantities are 0</p>
             <p className="font-body text-xs">Select items from the list above to generate sticker sheets.</p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 gap-3 print:grid-cols-4 print:gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 gap-3 print:grid-cols-4 print:gap-1.5 print:w-full">
             {displayedStickers.map((sticker) => (
               <div
                 key={sticker.id}
-                className="border-2 border-black rounded-md p-2 flex items-center gap-2 bg-white text-black break-inside-avoid print:border-black"
-                style={{ minHeight: '80px' }}
+                className="border-2 border-black rounded-md p-2 flex items-center gap-2 bg-white text-black break-inside-avoid print:break-inside-avoid print:border-black print:p-1.5"
+                style={{ minHeight: '74px' }}
               >
                 {/* QR Code Square */}
-                <div className="w-16 h-16 shrink-0 bg-white flex items-center justify-center p-0.5 border border-black/20">
+                <div className="w-14 h-14 sm:w-16 sm:h-16 shrink-0 bg-white flex items-center justify-center p-0.5 border border-black/20 print:border-black">
                   <img
                     src={generateQrSvgUri(sticker.qrCode, 100)}
                     alt={sticker.qrCode}
@@ -225,16 +225,10 @@ export default function QrStickers({ products = [] }) {
                   />
                 </div>
 
-                {/* Cracker Name & Details Printed Beside QR */}
-                <div className="flex flex-col justify-center flex-1 min-w-0 leading-tight">
-                  <p className="font-title text-xs font-extrabold text-black uppercase tracking-tight line-clamp-2">
+                {/* Cracker Name ONLY - High visibility, bold and readable */}
+                <div className="flex flex-col justify-center flex-1 min-w-0 pl-1 leading-tight">
+                  <p className="font-title text-xs sm:text-sm font-black text-black uppercase tracking-tight break-words line-clamp-3">
                     {sticker.productName}
-                  </p>
-                  <p className="font-mono text-[11px] font-bold text-black mt-0.5">
-                    ₹{sticker.price} <span className="font-normal text-[9px]">/ {sticker.unit}</span>
-                  </p>
-                  <p className="font-mono text-[9px] font-semibold tracking-wider text-black/80 truncate">
-                    {sticker.qrCode}
                   </p>
                 </div>
               </div>

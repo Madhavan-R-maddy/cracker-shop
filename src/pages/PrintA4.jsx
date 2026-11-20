@@ -20,7 +20,7 @@ export default function PrintA4({ bill, onBack }) {
   }).format(new Date(bill.bill_date || Date.now()));
 
   return (
-    <div className="min-h-screen bg-light-surface p-4 flex flex-col items-center gap-4">
+    <div className="min-h-screen bg-light-surface p-4 flex flex-col items-center gap-4 print:p-0 print:m-0 print:gap-0 print:bg-white print:min-h-0">
       {/* Top Action Bar (Hidden when printed) */}
       <div className="w-full max-w-[794px] flex items-center justify-between no-print">
         <button

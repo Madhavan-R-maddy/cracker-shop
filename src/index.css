@@ -25,17 +25,66 @@
   background: #0B4F3A;
 }
 
-/* 58mm Thermal Receipt Print Rules */
+/* ==============================================================================
+   PRINT STYLES: QR Stickers, A4 Bills & 58mm Thermal Receipts
+   Removes browser headers, footers (URL, title, date), blank page 1, and app UI.
+   ============================================================================== */
 @media print {
+  @page {
+    margin: 0 !important;
+    size: auto;
+  }
+
+  html, body, #root {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* Completely hide all app header, sidebar, navigation and interactive buttons */
+  header, 
+  aside, 
+  nav, 
+  .no-print, 
+  [role="banner"], 
+  [role="navigation"] {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  main {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    overflow: visible !important;
+  }
+
+  /* Prevent awkward item splitting across print pages */
+  .break-inside-avoid {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  /* 58mm Thermal Receipt Print Rules */
   .thermal-receipt-page {
     width: 48mm !important;
     max-width: 48mm !important;
-    margin: 0 !important;
-    padding: 0 !important;
+    margin: 0 auto !important;
+    padding: 1.5mm !important;
     color: #000000 !important;
     background: #FFFFFF !important;
     font-family: 'Source Code Pro', monospace !important;
     page-break-after: avoid !important;
     page-break-inside: avoid !important;
+    border: none !important;
+    box-shadow: none !important;
   }
 }

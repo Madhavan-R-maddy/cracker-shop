@@ -34,11 +34,21 @@ export default function Billing({
   const [isSaving, setIsSaving] = useState(false);
   const [savedBillData, setSavedBillData] = useState(null);
 
-  // Generate clean automatic Bill Number
+  // Generate clean automatic Bill Number starting fresh from INV-YYYY-0001
   useEffect(() => {
     const currentYear = new Date().getFullYear();
-    const count = (bills.length + 1).toString().padStart(4, '0');
-    setBillNumber(`INV-${currentYear}-${count}`);
+    let maxNum = 0;
+    (bills || []).forEach(b => {
+      if (b.bill_number) {
+        const match = b.bill_number.match(/INV-\d{4}-(\d+)/);
+        if (match) {
+          const n = parseInt(match[1], 10);
+          if (!isNaN(n) && n > maxNum) maxNum = n;
+        }
+      }
+    });
+    const nextNum = (maxNum + 1).toString().padStart(4, '0');
+    setBillNumber(`INV-${currentYear}-${nextNum}`);
   }, [bills]);
 
   // Search Suggestions from live stock
@@ -242,8 +252,19 @@ export default function Billing({
     setDiscountPercent(0);
     setSavedBillData(null);
     const currentYear = new Date().getFullYear();
-    const count = (bills.length + 2).toString().padStart(4, '0');
-    setBillNumber(`INV-${currentYear}-${count}`);
+    let maxNum = 0;
+    (bills || []).forEach(b => {
+      if (b.bill_number) {
+        const match = b.bill_number.match(/INV-\d{4}-(\d+)/);
+        if (match) {
+          const n = parseInt(match[1], 10);
+          if (!isNaN(n) && n > maxNum) maxNum = n;
+        }
+      }
+    });
+    // Add 1 to current max
+    const nextNum = (maxNum + 1).toString().padStart(4, '0');
+    setBillNumber(`INV-${currentYear}-${nextNum}`);
   }
 
   return (

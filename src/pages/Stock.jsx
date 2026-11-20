@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
+import mammoth from 'mammoth';
 import { addProduct, updateProduct, deleteProduct, supabase, isSupabaseConfigured } from '../lib/supabase';
 import VideoModal from '../components/VideoModal';
 
@@ -157,13 +158,63 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
         }
 
         setReviewItems(extracted);
-      } else if (fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')) {
-        // Send to Supabase Edge Function (Gemini AI API)
+      } else if (fileName.endsWith('.docx') || fileName.endsWith('.doc')) {
+        // For Word (.docx) documents: Extract text in the browser first using Mammoth,
+        // then send the pure text to the Edge Function (avoids sending binary files to Gemini)
+        try {
+          const arrayBuffer = await file.arrayBuffer();
+          const mammothResult = await mammoth.extractRawText({ arrayBuffer });
+          const extractedText = mammothResult?.value || '';
+
+          if (!extractedText.trim()) {
+            throw new Error('Could not extract any readable text from this Word document.');
+          }
+
+          if (isSupabaseConfigured && supabase) {
+            const { data, error } = await supabase.functions.invoke('parse-stock-list', {
+              body: {
+                text: extractedText,
+                fileName: file.name
+              }
+            });
+
+            if (error) {
+              let realErrMsg = error.message;
+              if (error.context) {
+                try {
+                  const errJson = await error.context.json();
+                  if (errJson?.error) realErrMsg = errJson.error;
+                } catch {
+                  try {
+                    const text = await error.context.text();
+                    if (text) realErrMsg = text;
+                  } catch {}
+                }
+              }
+              throw new Error(realErrMsg);
+            }
+
+            if (data?.items && Array.isArray(data.items)) {
+              setReviewItems(data.items);
+            } else {
+              throw new Error('Invalid response format from Gemini document parser.');
+            }
+          } else {
+            throw new Error('Supabase is not configured. Please check environment variables.');
+          }
+        } catch (docxErr) {
+          setUploadError('Word parser error: ' + (docxErr.message || String(docxErr)));
+        } finally {
+          setUploadLoading(false);
+        }
+        return;
+      } else if (fileName.endsWith('.pdf') || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') || fileName.endsWith('.png')) {
+        // Send PDF / image as base64 to Supabase Edge Function (Gemini AI API)
         const reader = new FileReader();
         reader.onload = async () => {
           try {
             const base64Data = reader.result.split(',')[1];
-            const mimeType = file.type || (fileName.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            const mimeType = file.type || (fileName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
 
             if (isSupabaseConfigured && supabase) {
               const { data, error } = await supabase.functions.invoke('parse-stock-list', {
@@ -174,19 +225,29 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                 }
               });
 
-              if (error) throw error;
+              if (error) {
+                let realErrMsg = error.message;
+                if (error.context) {
+                  try {
+                    const errJson = await error.context.json();
+                    if (errJson?.error) realErrMsg = errJson.error;
+                  } catch {
+                    try {
+                      const text = await error.context.text();
+                      if (text) realErrMsg = text;
+                    } catch {}
+                  }
+                }
+                throw new Error(realErrMsg);
+              }
+
               if (data?.items && Array.isArray(data.items)) {
                 setReviewItems(data.items);
               } else {
                 throw new Error('Invalid response format from Gemini document parser.');
               }
             } else {
-              // Simulated AI extraction preview if user hasn't deployed edge function yet
-              setReviewItems([
-                { name: '5000 Wala Garland', quantity: 15, price: 2100, unit: 'box', category: 'Garlands' },
-                { name: 'Red Bijili 100 pcs', quantity: 60, price: 45, unit: 'packet', category: 'Novelty' },
-                { name: '12-Shot Sky Rocket', quantity: 20, price: 380, unit: 'box', category: 'Aerial Shots' }
-              ]);
+              throw new Error('Supabase is not configured. Please check environment variables.');
             }
           } catch (fnErr) {
             setUploadError('Gemini reading error: ' + (fnErr.message || 'Please ensure GEMINI_API_KEY is configured in Supabase Edge Function'));

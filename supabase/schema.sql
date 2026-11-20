@@ -83,8 +83,6 @@ create policy "Allow Delete Cracker Videos" on storage.objects
   for delete using (bucket_id = 'cracker-videos');
 
 -- 7. ROW LEVEL SECURITY (RLS) POLICIES
--- For a shared internal shop tool protected by a physical PIN lock on counter devices,
--- we allow read/write access via the Supabase client anon key.
 alter table public.products enable row level security;
 alter table public.bills enable row level security;
 alter table public.bill_items enable row level security;
@@ -97,17 +95,221 @@ create policy "Anon full access bill_items" on public.bill_items for all using (
 create policy "Anon full access requested_items" on public.requested_items for all using (true) with check (true);
 create policy "Anon full access settings" on public.settings for all using (true) with check (true);
 
--- 8. INITIAL SEED SAMPLE PRODUCTS
-insert into public.products (id, name, category, price, quantity, unit, low_stock_level, qr_code)
-values
-  ('11111111-1111-1111-1111-111111111101', '30 SHOT MULTI COLOR', 'Aerial Shots', 750.00, 25, 'box', 5, 'CRK-30SHOT'),
-  ('11111111-1111-1111-1111-111111111102', 'Twister', 'Fountains', 270.00, 30, 'box', 8, 'CRK-TWISTER'),
-  ('11111111-1111-1111-1111-111111111103', 'Twix/Jelly Pops', 'Novelty', 220.00, 40, 'box', 10, 'CRK-JELLYPOP'),
-  ('11111111-1111-1111-1111-111111111104', 'Pogaya Podu', 'Smoke & Color', 270.00, 35, 'box', 8, 'CRK-POGAYA'),
-  ('11111111-1111-1111-1111-111111111105', '30CM COLOR SPARKLERS', 'Sparklers', 80.00, 85, 'box', 20, 'CRK-SPK30CM'),
-  ('11111111-1111-1111-1111-111111111106', '15CM COLOR SPARKLERS', 'Sparklers', 65.00, 90, 'box', 25, 'CRK-SPK15CM'),
-  ('11111111-1111-1111-1111-111111111107', 'Flower POT Super Colour koti', 'Flower Pots', 350.00, 18, 'box', 10, 'CRK-POTKOTI'),
-  ('11111111-1111-1111-1111-111111111108', '12 Shot Raider', 'Aerial Shots', 270.00, 22, 'box', 6, 'CRK-12RAIDER'),
-  ('11111111-1111-1111-1111-111111111109', 'Whistle podu', 'Novelty', 220.00, 28, 'box', 8, 'CRK-WHISTLE'),
-  ('11111111-1111-1111-1111-111111111110', '1000 Wala Garland', 'Garlands', 480.00, 4, 'box', 10, 'CRK-1000WALA')
-on conflict (qr_code) do nothing;
+-- 8. PERMISSIONS & GRANTS
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON ROUTINES TO anon, authenticated, service_role;
+
+-- 9. ATOMIC RPC TRANSACTIONS
+CREATE OR REPLACE FUNCTION public.create_bill_with_stock(
+  bill_data jsonb,
+  items_data jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_bill_id uuid;
+  v_item jsonb;
+  v_product_id uuid;
+  v_qty integer;
+  v_rate numeric;
+  v_item_total numeric;
+  v_product_name text;
+  v_created_bill jsonb;
+BEGIN
+  v_bill_id := COALESCE((bill_data->>'id')::uuid, gen_random_uuid());
+
+  INSERT INTO public.bills (
+    id, bill_number, customer_name, place, bill_date,
+    subtotal, discount_percent, discount_amount, final_total, created_at
+  ) VALUES (
+    v_bill_id,
+    bill_data->>'bill_number',
+    bill_data->>'customer_name',
+    COALESCE(bill_data->>'place', ''),
+    COALESCE((bill_data->>'bill_date')::timestamptz, now()),
+    COALESCE((bill_data->>'subtotal')::numeric, 0),
+    COALESCE((bill_data->>'discount_percent')::numeric, 0),
+    COALESCE((bill_data->>'discount_amount')::numeric, 0),
+    COALESCE((bill_data->>'final_total')::numeric, 0),
+    COALESCE((bill_data->>'created_at')::timestamptz, now())
+  );
+
+  FOR v_item IN SELECT * FROM jsonb_array_elements(items_data)
+  LOOP
+    v_product_id := CASE 
+      WHEN v_item->>'product_id' IS NOT NULL AND v_item->>'product_id' <> '' 
+      THEN (v_item->>'product_id')::uuid 
+      ELSE NULL 
+    END;
+    v_qty := GREATEST(1, COALESCE((v_item->>'quantity')::integer, (v_item->>'qty')::integer, 1));
+    v_rate := COALESCE((v_item->>'rate')::numeric, 0);
+    v_item_total := COALESCE((v_item->>'total')::numeric, v_rate * v_qty);
+    v_product_name := COALESCE(v_item->>'product_name', v_item->>'name', 'Unknown Item');
+
+    INSERT INTO public.bill_items (
+      id, bill_id, product_id, product_name, rate, quantity, total
+    ) VALUES (
+      COALESCE((v_item->>'id')::uuid, gen_random_uuid()),
+      v_bill_id, v_product_id, v_product_name, v_rate, v_qty, v_item_total
+    );
+
+    IF v_product_id IS NOT NULL THEN
+      UPDATE public.products
+      SET quantity = GREATEST(0, quantity - v_qty)
+      WHERE id = v_product_id;
+    END IF;
+  END LOOP;
+
+  SELECT jsonb_build_object(
+    'id', b.id,
+    'bill_number', b.bill_number,
+    'customer_name', b.customer_name,
+    'place', b.place,
+    'bill_date', b.bill_date,
+    'subtotal', b.subtotal,
+    'discount_percent', b.discount_percent,
+    'discount_amount', b.discount_amount,
+    'final_total', b.final_total,
+    'created_at', b.created_at,
+    'items', (
+      SELECT jsonb_agg(bi.*)
+      FROM public.bill_items bi
+      WHERE bi.bill_id = b.id
+    )
+  ) INTO v_created_bill
+  FROM public.bills b
+  WHERE b.id = v_bill_id;
+
+  RETURN v_created_bill;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.delete_bill_and_restore_stock(
+  p_bill_id uuid
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_item record;
+BEGIN
+  FOR v_item IN 
+    SELECT product_id, quantity 
+    FROM public.bill_items 
+    WHERE bill_id = p_bill_id AND product_id IS NOT NULL
+  LOOP
+    UPDATE public.products
+    SET quantity = quantity + v_item.quantity
+    WHERE id = v_item.product_id;
+  END LOOP;
+
+  DELETE FROM public.bill_items WHERE bill_id = p_bill_id;
+  DELETE FROM public.bills WHERE id = p_bill_id;
+
+  RETURN true;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.update_bill_with_stock(
+  p_bill_id uuid,
+  bill_data jsonb,
+  items_data jsonb
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_item record;
+  v_new_item jsonb;
+  v_product_id uuid;
+  v_qty integer;
+  v_rate numeric;
+  v_item_total numeric;
+  v_product_name text;
+  v_updated_bill jsonb;
+BEGIN
+  FOR v_item IN 
+    SELECT product_id, quantity 
+    FROM public.bill_items 
+    WHERE bill_id = p_bill_id AND product_id IS NOT NULL
+  LOOP
+    UPDATE public.products
+    SET quantity = quantity + v_item.quantity
+    WHERE id = v_item.product_id;
+  END LOOP;
+
+  DELETE FROM public.bill_items WHERE bill_id = p_bill_id;
+
+  UPDATE public.bills SET
+    customer_name = bill_data->>'customer_name',
+    place = COALESCE(bill_data->>'place', ''),
+    bill_date = COALESCE((bill_data->>'bill_date')::timestamptz, bill_date),
+    subtotal = COALESCE((bill_data->>'subtotal')::numeric, 0),
+    discount_percent = COALESCE((bill_data->>'discount_percent')::numeric, 0),
+    discount_amount = COALESCE((bill_data->>'discount_amount')::numeric, 0),
+    final_total = COALESCE((bill_data->>'final_total')::numeric, 0)
+  WHERE id = p_bill_id;
+
+  FOR v_new_item IN SELECT * FROM jsonb_array_elements(items_data)
+  LOOP
+    v_product_id := CASE 
+      WHEN v_new_item->>'product_id' IS NOT NULL AND v_new_item->>'product_id' <> '' 
+      THEN (v_new_item->>'product_id')::uuid 
+      ELSE NULL 
+    END;
+    v_qty := GREATEST(1, COALESCE((v_new_item->>'quantity')::integer, (v_new_item->>'qty')::integer, 1));
+    v_rate := COALESCE((v_new_item->>'rate')::numeric, 0);
+    v_item_total := COALESCE((v_new_item->>'total')::numeric, v_rate * v_qty);
+    v_product_name := COALESCE(v_new_item->>'product_name', v_new_item->>'name', 'Unknown Item');
+
+    INSERT INTO public.bill_items (
+      id, bill_id, product_id, product_name, rate, quantity, total
+    ) VALUES (
+      COALESCE((v_new_item->>'id')::uuid, gen_random_uuid()),
+      p_bill_id, v_product_id, v_product_name, v_rate, v_qty, v_item_total
+    );
+
+    IF v_product_id IS NOT NULL THEN
+      UPDATE public.products
+      SET quantity = GREATEST(0, quantity - v_qty)
+      WHERE id = v_product_id;
+    END IF;
+  END LOOP;
+
+  SELECT jsonb_build_object(
+    'id', b.id,
+    'bill_number', b.bill_number,
+    'customer_name', b.customer_name,
+    'place', b.place,
+    'bill_date', b.bill_date,
+    'subtotal', b.subtotal,
+    'discount_percent', b.discount_percent,
+    'discount_amount', b.discount_amount,
+    'final_total', b.final_total,
+    'created_at', b.created_at,
+    'items', (
+      SELECT jsonb_agg(bi.*)
+      FROM public.bill_items bi
+      WHERE bi.bill_id = b.id
+    )
+  ) INTO v_updated_bill
+  FROM public.bills b
+  WHERE b.id = p_bill_id;
+
+  RETURN v_updated_bill;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.create_bill_with_stock(jsonb, jsonb) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.delete_bill_and_restore_stock(uuid) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.update_bill_with_stock(uuid, jsonb, jsonb) TO anon, authenticated, service_role;

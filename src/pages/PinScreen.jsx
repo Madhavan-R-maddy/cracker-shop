@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { hashPin, setSessionUnlocked } from '../lib/crypto';
-import { getSettings } from '../lib/supabase';
+import { getFreshPinHash } from '../lib/supabase';
 
 export default function PinScreen({ onUnlock }) {
   const [pin, setPin] = useState('');
@@ -29,7 +29,7 @@ export default function PinScreen({ onUnlock }) {
   async function handleSubmit(e) {
     if (e) e.preventDefault();
     if (!pin) {
-      setError('Please enter your 4-digit PIN');
+      setError('Please enter your PIN');
       return;
     }
 
@@ -38,22 +38,23 @@ export default function PinScreen({ onUnlock }) {
 
     try {
       const hashedInput = await hashPin(pin);
-      const settings = await getSettings();
-      const storedHash = settings?.pin_hash || '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4'; // default 1234
+      // Read directly and freshly from Supabase settings table - NO fallback or hardcoded hash
+      const storedHash = await getFreshPinHash();
 
       if (hashedInput === storedHash) {
         setSuccess(true);
         setSessionUnlocked(true);
         setTimeout(() => {
           onUnlock();
-        }, 500);
+        }, 400);
       } else {
         setError('Incorrect PIN. Please try again.');
         setPin('');
       }
     } catch (err) {
-      console.error(err);
-      setError('Verification error: ' + err.message);
+      console.error('PIN verification error:', err);
+      setError('Connection/verification error: ' + (err.message || 'Could not verify PIN.'));
+      setPin('');
     } finally {
       setLoading(false);
     }
@@ -111,9 +112,6 @@ export default function PinScreen({ onUnlock }) {
                 </span>
               </button>
             </div>
-            <span className="font-body text-[11px] text-light-on-surface-variant text-center">
-              Default factory PIN: <strong className="font-mono text-deep-green">1234</strong> (changeable in Settings)
-            </span>
           </div>
 
           {error && (
@@ -144,9 +142,9 @@ export default function PinScreen({ onUnlock }) {
             <button
               type="button"
               onClick={handleClear}
-              className="min-h-12 rounded-lg bg-light-surface-container-lowest border border-light-outline-variant font-label text-xs font-bold text-bright-red hover:bg-red-soft active:scale-[0.96] transition-all shadow-xs"
+              className="min-h-12 rounded-lg bg-light-surface-container-low border border-light-outline-variant font-label text-xs font-bold text-light-on-surface-variant hover:bg-gold-soft active:scale-[0.96] transition-all"
             >
-              Clear
+              CLEAR
             </button>
             <button
               type="button"
@@ -158,21 +156,28 @@ export default function PinScreen({ onUnlock }) {
             <button
               type="button"
               onClick={handleBackspace}
-              aria-label="Backspace"
-              className="min-h-12 rounded-lg bg-light-surface-container-low border border-light-outline-variant text-light-on-surface hover:bg-gold-soft active:scale-[0.96] inline-flex items-center justify-center transition-all shadow-xs"
+              className="min-h-12 rounded-lg bg-light-surface-container-low border border-light-outline-variant inline-flex items-center justify-center text-light-on-surface-variant hover:bg-gold-soft active:scale-[0.96] transition-all"
             >
               <span className="material-symbols-outlined text-[20px]">backspace</span>
             </button>
           </div>
 
-          {/* Unlock Submit Button */}
           <button
             type="submit"
-            disabled={loading || !pin}
-            className="w-full inline-flex items-center justify-center gap-2 min-h-13 px-5 py-3 rounded-lg bg-gold text-on-gold border border-gold-border font-label text-sm font-bold shadow-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50"
+            disabled={loading || pin.length < 4}
+            className="w-full min-h-12 mt-1 rounded-lg bg-deep-green text-on-deep-green border border-gold-border font-label text-sm font-bold uppercase tracking-wider hover:opacity-95 active:scale-[0.98] transition-all shadow-md disabled:opacity-50 flex items-center justify-center gap-2"
           >
-            <span className="material-symbols-outlined text-[20px]">lock_open</span>
-            <span>{loading ? 'Verifying...' : 'Unlock Terminal'}</span>
+            {loading ? (
+              <>
+                <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
+                <span>Verifying...</span>
+              </>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-[18px]">lock_open</span>
+                <span>Unlock Counter</span>
+              </>
+            )}
           </button>
         </form>
       </div>

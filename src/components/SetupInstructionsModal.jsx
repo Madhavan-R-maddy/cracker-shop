@@ -146,8 +146,9 @@ create policy "Allow Delete Cracker Videos" on storage.objects for delete using 
             In your terminal, deploy the edge function using Supabase CLI and set your free Gemini API key:
           </p>
           <div className="bg-light-surface-container p-3 rounded font-mono text-xs border border-light-outline-variant flex flex-col gap-1.5">
-            <p className="text-light-on-surface-variant font-bold"># 1. Set the Gemini API Key in Supabase Secrets</p>
+            <p className="text-light-on-surface-variant font-bold"># 1. Set the Gemini API Key & Model in Supabase Secrets</p>
             <p className="text-deep-green font-bold">supabase secrets set GEMINI_API_KEY=your_gemini_api_key</p>
+            <p className="text-deep-green font-bold">supabase secrets set GEMINI_MODEL=gemini-2.5-flash</p>
             <p className="text-light-on-surface-variant font-bold mt-1"># 2. Deploy the parse-stock-list function</p>
             <p className="text-deep-green font-bold">supabase functions deploy parse-stock-list --no-verify-jwt</p>
           </div>

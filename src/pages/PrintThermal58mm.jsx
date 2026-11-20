@@ -129,7 +129,7 @@ export default function PrintThermal58mm({ bill, onBack }) {
   }
 
   return (
-    <div className="min-h-screen bg-light-surface p-4 flex flex-col items-center gap-4">
+    <div className="min-h-screen bg-light-surface p-4 flex flex-col items-center gap-4 print:p-0 print:m-0 print:gap-0 print:bg-white print:min-h-0">
       {/* Top Action Bar (Hidden when printed) */}
       <div className="w-full max-w-sm flex items-center justify-between no-print">
         <button
@@ -193,7 +193,7 @@ export default function PrintThermal58mm({ bill, onBack }) {
       {/* 58MM THERMAL RECEIPT CONTAINER */}
       {/* Pure black on pure white, 48mm printable width, stacked 2 lines */}
       {/* ------------------------------------------------------------- */}
-      <div className="w-full flex justify-center py-2">
+      <div className="w-full flex justify-center py-2 print:p-0 print:m-0 print:py-0">
         <article
           ref={receiptRef}
           className="thermal-receipt-page w-[48mm] max-w-[48mm] bg-white text-black font-mono p-1 border-2 border-black print:border-none shadow-md print:shadow-none"
