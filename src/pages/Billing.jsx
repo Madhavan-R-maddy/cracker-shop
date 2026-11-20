@@ -705,12 +705,11 @@ export default function Billing({
         </aside>
       </section>
 
-      {/* Camera QR Scanner Modal */}
+      {/* Continuous Camera QR Scanner Modal */}
       <QrScannerModal
         isOpen={isScannerOpen}
         onClose={() => setIsScannerOpen(false)}
         onScan={handleQrScan}
-        products={products}
         items={items}
       />
 

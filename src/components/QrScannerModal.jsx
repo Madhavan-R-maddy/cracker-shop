@@ -51,7 +51,6 @@ export default function QrScannerModal({
   isOpen, 
   onClose, 
   onScan, 
-  products = [],
   items = [] 
 }) {
   const [scannerError, setScannerError] = useState('');
@@ -64,6 +63,7 @@ export default function QrScannerModal({
   const lastScannedTimeRef = useRef(0);
   const isStoppingRef = useRef(false);
   const statusTimerRef = useRef(null);
+  const cameraTimeoutRef = useRef(null);
 
   // Compute live bill totals
   const runningTotal = items.reduce((sum, item) => sum + (parseFloat(item.rate) || 0) * (parseInt(item.qty, 10) || 0), 0);
@@ -178,11 +178,31 @@ export default function QrScannerModal({
 
     const containerId = `qr-reader-container-${currentMount}`;
 
+    // Safety timeout: if camera doesn't start within 5s, display clear message instead of a plain black box
+    cameraTimeoutRef.current = setTimeout(() => {
+      setScannerError(prev => {
+        if (!prev) {
+          return 'Camera not available. Please allow camera permission or use search to add items.';
+        }
+        return prev;
+      });
+    }, 5000);
+
     // Small delay to ensure the modal DOM element is rendered with dimensions
     const startTimer = setTimeout(async () => {
       const containerEl = document.getElementById(containerId);
       if (!containerEl) return;
       containerEl.innerHTML = '';
+
+      // Check browser mediaDevices support
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (cameraTimeoutRef.current) clearTimeout(cameraTimeoutRef.current);
+        setScannerError(
+          'Camera not available. Please allow camera permission or use search to add items.'
+        );
+        setIsCameraActive(false);
+        return;
+      }
 
       try {
         const qrCode = new Html5Qrcode(containerId, { verbose: false });
@@ -210,18 +230,21 @@ export default function QrScannerModal({
           }
         );
 
+        if (cameraTimeoutRef.current) clearTimeout(cameraTimeoutRef.current);
         setIsCameraActive(true);
       } catch (err) {
         console.error('Camera initialization error:', err);
+        if (cameraTimeoutRef.current) clearTimeout(cameraTimeoutRef.current);
         setScannerError(
-          err?.message || 
-          'Unable to access camera. Please ensure camera permissions are granted and the site is opened via HTTPS.'
+          'Camera not available. Please allow camera permission or use search to add items.'
         );
+        setIsCameraActive(false);
       }
     }, 180);
 
     return () => {
       clearTimeout(startTimer);
+      if (cameraTimeoutRef.current) clearTimeout(cameraTimeoutRef.current);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
 
       if (html5QrCodeRef.current) {
@@ -252,7 +275,7 @@ export default function QrScannerModal({
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
       <div className="w-full max-w-lg bg-light-surface-container-lowest border-2 border-gold-border rounded-xl shadow-2xl p-4 sm:p-5 flex flex-col gap-3.5 max-h-[94vh] animate-in fade-in zoom-in-95 duration-150">
         
-        {/* Header */}
+        {/* Header with Instruction Text */}
         <div className="flex items-center justify-between border-b border-light-outline-variant pb-2.5 shrink-0">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-deep-green text-[24px]">qr_code_scanner</span>
@@ -275,8 +298,8 @@ export default function QrScannerModal({
           </button>
         </div>
 
-        {/* Viewfinder Frame with instant visual feedback */}
-        <div className={`relative w-full rounded-xl overflow-hidden bg-black aspect-video sm:aspect-square flex flex-col items-center justify-center border-4 transition-all duration-300 shrink-0 ${
+        {/* Viewfinder Frame with visual feedback & error messaging */}
+        <div className={`relative w-full rounded-xl overflow-hidden bg-neutral-950 aspect-video sm:aspect-square flex flex-col items-center justify-center border-4 transition-all duration-300 shrink-0 ${
           scanStatus?.type === 'success' 
             ? 'border-deep-green ring-4 ring-deep-green/30 shadow-[0_0_24px_rgba(26,77,46,0.6)]' 
             : scanStatus?.type === 'error'
@@ -285,6 +308,33 @@ export default function QrScannerModal({
         }`}>
           {/* HTML5 QR Code Container */}
           <div id={currentContainerId} className="w-full h-full" />
+
+          {/* Loading indicator while camera initializes */}
+          {!scannerError && !isCameraActive && (
+            <div className="absolute inset-0 bg-neutral-950/90 flex flex-col items-center justify-center gap-2.5 text-white p-4 text-center z-10">
+              <span className="material-symbols-outlined text-gold text-3xl animate-spin">progress_activity</span>
+              <p className="font-title text-sm font-semibold text-gold">Opening camera...</p>
+            </div>
+          )}
+
+          {/* Camera Not Available Message inside Camera Area (replaces black box) */}
+          {scannerError && (
+            <div className="absolute inset-0 bg-neutral-950/98 p-6 flex flex-col items-center justify-center text-center gap-3 text-white z-20">
+              <div className="w-14 h-14 rounded-full bg-bright-red/15 border-2 border-bright-red/60 flex items-center justify-center text-bright-red mb-1 shadow-lg">
+                <span className="material-symbols-outlined text-[32px]">videocam_off</span>
+              </div>
+              <p className="font-title text-base font-bold text-white tracking-wide">
+                Camera Not Available
+              </p>
+              <p className="font-body text-xs sm:text-sm text-neutral-300 max-w-sm leading-relaxed">
+                {scannerError}
+              </p>
+              <div className="mt-1 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gold/15 border border-gold/40 text-gold text-xs font-semibold">
+                <span className="material-symbols-outlined text-[16px]">search</span>
+                <span>Use search on the Billing page to add crackers</span>
+              </div>
+            </div>
+          )}
 
           {/* Instant feedback notification banner */}
           {scanStatus && (
@@ -299,18 +349,6 @@ export default function QrScannerModal({
                 </span>
                 <span className="truncate">{scanStatus.message}</span>
               </div>
-            </div>
-          )}
-
-          {/* Camera Access Error Message */}
-          {scannerError && (
-            <div className="absolute inset-0 bg-black/92 p-5 flex flex-col items-center justify-center text-center gap-2.5 text-white z-20">
-              <span className="material-symbols-outlined text-bright-red text-[44px]">videocam_off</span>
-              <p className="font-title text-sm font-bold text-white">Camera Access Error</p>
-              <p className="font-body text-xs text-light-surface-container max-w-xs">{scannerError}</p>
-              <p className="text-[11px] text-gold mt-1 font-body">
-                Make sure you are on HTTPS and camera permission is allowed. You can also tap the simulation buttons below to test.
-              </p>
             </div>
           )}
 
@@ -371,35 +409,14 @@ export default function QrScannerModal({
           </div>
         </div>
 
-        {/* Quick simulation buttons for testing */}
-        {products.length > 0 && (
-          <div className="flex flex-col gap-1 pt-1 border-t border-light-outline-variant shrink-0">
-            <span className="font-label text-[10px] text-light-on-surface-variant font-semibold">
-              Tap to simulate scan:
-            </span>
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-              {products.slice(0, 5).map(p => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => handleDecoded(p.qr_code || p.name)}
-                  className="px-2.5 py-1 rounded bg-white border border-gold-border font-title text-[11px] font-bold text-deep-green hover:bg-gold-soft active:scale-95 transition-all whitespace-nowrap shrink-0 shadow-2xs"
-                >
-                  + {p.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Done Button */}
+        {/* Done Scanning Button */}
         <button
           type="button"
           onClick={handleStopAndClose}
           className="w-full min-h-12 px-5 py-3 rounded-lg bg-deep-green text-white font-label text-sm font-bold shadow-md hover:opacity-90 active:scale-98 transition-all flex items-center justify-center gap-2 shrink-0"
         >
           <span className="material-symbols-outlined text-[20px]">check_circle</span>
-          <span>Done (Show Bill)</span>
+          <span>Done Scanning</span>
         </button>
       </div>
     </div>
