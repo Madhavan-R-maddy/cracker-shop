@@ -43,6 +43,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
   // Upload & Review state
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadProgressMsg, setUploadProgressMsg] = useState('');
+  const [uploadError, setUploadError] = useState('');
   const [uploadErrorObj, setUploadErrorObj] = useState(null); // { friendly: string, raw: string, canRetry: boolean }
   const [lastUploadedFile, setLastUploadedFile] = useState(null);
   const [reviewItems, setReviewItems] = useState([]);
@@ -220,6 +221,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
 
     setUploadLoading(true);
     setUploadProgressMsg('Reading your file...');
+    setUploadError('');
     setUploadErrorObj(null);
     setImportError('');
     setLastUploadedFile(file);
@@ -346,14 +348,18 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       );
 
       if (isBusy) {
+        const friendlyMsg = 'The AI service is temporarily busy. Please click "Try again" or upload an Excel, CSV, or Word file.';
+        setUploadError(friendlyMsg);
         setUploadErrorObj({
-          friendly: 'The AI service is temporarily busy. Please click "Try again" or upload an Excel, CSV, or Word file.',
+          friendly: friendlyMsg,
           raw: err.rawDetails || err.message || String(err),
           canRetry: true
         });
       } else {
+        const friendlyMsg = err.message || 'Failed to process document.';
+        setUploadError(friendlyMsg);
         setUploadErrorObj({
-          friendly: err.message || 'Failed to process document.',
+          friendly: friendlyMsg,
           raw: err.rawDetails || err.message || String(err),
           canRetry: false
         });
@@ -466,6 +472,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
 
       // Reset and close
       setReviewItems([]);
+      setUploadError('');
       setUploadErrorObj(null);
       setIsUploadModalOpen(false);
 
@@ -525,6 +532,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
             onClick={() => {
               setReviewItems([]);
               setUploadError('');
+              setUploadErrorObj(null);
               setIsUploadModalOpen(true);
             }}
             className="inline-flex items-center gap-1.5 min-h-[42px] px-3.5 py-1.5 rounded-md bg-light-surface-container-lowest text-deep-green border border-gold-border font-label text-xs sm:text-sm font-bold hover:bg-gold-soft shadow-xs"
@@ -1368,10 +1376,12 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                   if (reviewItems.length > 0) {
                     if (window.confirm('Discard imported items and close?')) {
                       setReviewItems([]);
+                      setUploadError('');
                       setUploadErrorObj(null);
                       setIsUploadModalOpen(false);
                     }
                   } else {
+                    setUploadError('');
                     setUploadErrorObj(null);
                     setIsUploadModalOpen(false);
                   }
@@ -1431,16 +1441,16 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                 )}
 
                 {/* Friendly Error with Retry option */}
-                {uploadErrorObj && (
+                {(uploadError || uploadErrorObj) && (
                   <div className="p-4 rounded-lg bg-red-soft text-bright-red border border-bright-red/30 flex flex-col gap-2 shadow-xs animate-in fade-in">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-2.5">
                         <span className="material-symbols-outlined text-[22px] shrink-0 text-bright-red mt-0.5">error</span>
                         <div className="flex flex-col gap-1">
                           <p className="font-label text-xs sm:text-sm font-bold text-bright-red">
-                            {uploadErrorObj.friendly}
+                            {uploadError || uploadErrorObj?.friendly}
                           </p>
-                          {uploadErrorObj.canRetry && lastUploadedFile && (
+                          {uploadErrorObj?.canRetry && lastUploadedFile && (
                             <button
                               type="button"
                               onClick={() => handleProcessFile(lastUploadedFile)}
@@ -1454,14 +1464,18 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                       </div>
                       <button
                         type="button"
-                        onClick={() => setUploadErrorObj(null)}
+                        onClick={() => {
+                          setUploadError('');
+                          setUploadErrorObj(null);
+                        }}
                         className="text-bright-red hover:opacity-75"
+                        title="Dismiss error"
                       >
                         <span className="material-symbols-outlined text-[18px]">close</span>
                       </button>
                     </div>
 
-                    {uploadErrorObj.raw && uploadErrorObj.raw !== uploadErrorObj.friendly && (
+                    {uploadErrorObj?.raw && uploadErrorObj.raw !== (uploadError || uploadErrorObj.friendly) && (
                       <details className="mt-1 pt-2 border-t border-bright-red/20 text-xs">
                         <summary className="cursor-pointer font-label text-[11px] text-bright-red font-semibold select-none">
                           Show technical details
@@ -1698,6 +1712,7 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
                       type="button"
                       onClick={() => {
                         setReviewItems([]);
+                        setUploadError('');
                         setUploadErrorObj(null);
                         setIsUploadModalOpen(false);
                       }}
