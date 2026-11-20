@@ -191,6 +191,46 @@ export async function deleteProduct(id) {
   return true;
 }
 
+/**
+ * Bulk deletes multiple crackers in a single Supabase query.
+ */
+export async function deleteProducts(ids) {
+  assertSupabase();
+  if (!ids || ids.length === 0) return true;
+
+  const { error } = await supabase
+    .from('products')
+    .delete()
+    .in('id', ids);
+
+  if (error) {
+    console.error('Failed to delete selected products:', error);
+    throw new Error(`Database error deleting selected crackers: ${error.message}`);
+  }
+
+  return true;
+}
+
+/**
+ * Deletes all crackers from the products table in a single Supabase query.
+ * Old bills and customer records remain completely intact.
+ */
+export async function deleteAllProducts() {
+  assertSupabase();
+  // PostgREST requires at least one filter on DELETE - neq 00000000... matches all valid UUIDs
+  const { error } = await supabase
+    .from('products')
+    .delete()
+    .neq('id', '00000000-0000-0000-0000-000000000000');
+
+  if (error) {
+    console.error('Failed to delete all products:', error);
+    throw new Error(`Database error deleting all stock: ${error.message}`);
+  }
+
+  return true;
+}
+
 // ----------------------------------------------------------------------
 // 3. BILLS & ATOMIC STOCK OPERATIONS
 // ----------------------------------------------------------------------
