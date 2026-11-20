@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-light-surface text-light-on-surface font-body antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Custom scrollbars for high volume billing & stock tables */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F7F3E8;
+}
+::-webkit-scrollbar-thumb {
+  background: #D4AF37;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #0B4F3A;
+}
+
+/* 58mm Thermal Receipt Print Rules */
+@media print {
+  .thermal-receipt-page {
+    width: 48mm !important;
+    max-width: 48mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    color: #000000 !important;
+    background: #FFFFFF !important;
+    font-family: 'Source Code Pro', monospace !important;
+    page-break-after: avoid !important;
+    page-break-inside: avoid !important;
+  }
+}

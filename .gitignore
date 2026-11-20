@@ -1,0 +1,25 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Production build
+dist
+dist-ssr
+
+# Local env files (Protect secrets!)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Editor & OS files
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.log
+
+# MCP / Testing artifacts
+.playwright-mcp
