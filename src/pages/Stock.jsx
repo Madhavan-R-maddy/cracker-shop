@@ -1,8 +1,7 @@
 import React, { useState, useMemo } from 'react';
-import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
 import { 
   addProduct, 
+  addProductsBatch,
   updateProduct, 
   deleteProduct, 
   deleteProducts, 
@@ -10,6 +9,15 @@ import {
   supabase, 
   isSupabaseConfigured 
 } from '../lib/supabase';
+import {
+  parseExcelOrCsv,
+  parseWordDocument,
+  parsePdfDocument,
+  parsePlainText,
+  fileToBase64,
+  invokeGeminiParserWithRetry,
+  guessCategory
+} from '../lib/stockParser';
 import VideoModal from '../components/VideoModal';
 
 export default function Stock({ products = [], onRefresh, setActivePage }) {
@@ -34,9 +42,13 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
 
   // Upload & Review state
   const [uploadLoading, setUploadLoading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
+  const [uploadProgressMsg, setUploadProgressMsg] = useState('');
+  const [uploadErrorObj, setUploadErrorObj] = useState(null); // { friendly: string, raw: string, canRetry: boolean }
+  const [lastUploadedFile, setLastUploadedFile] = useState(null);
   const [reviewItems, setReviewItems] = useState([]);
   const [duplicateAction, setDuplicateAction] = useState('add'); // 'add' or 'skip'
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState('');
 
   // Categories list
   const categories = useMemo(() => {
@@ -201,214 +213,269 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
   }
 
   // ----------------------------------------------------
-  // FILE UPLOAD (EXCEL, CSV, PDF, WORD)
+  // FILE UPLOAD & PARSING (EXCEL, CSV, WORD, PDF, IMAGES, TXT)
   // ----------------------------------------------------
-  async function handleFileUpload(e) {
-    const file = e.target.files?.[0];
+  async function handleProcessFile(file) {
     if (!file) return;
 
     setUploadLoading(true);
-    setUploadError('');
-    setReviewItems([]);
+    setUploadProgressMsg('Reading your file...');
+    setUploadErrorObj(null);
+    setImportError('');
+    setLastUploadedFile(file);
 
     const fileName = file.name.toLowerCase();
 
     try {
-      if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.csv')) {
-        // Direct Client-Side Excel/CSV parsing
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      let rawExtractedItems = [];
 
-        if (!rawRows || rawRows.length < 2) {
-          throw new Error('Spreadsheet appears empty or has no data rows.');
-        }
-
-        // Header detection heuristics
-        const headers = rawRows[0].map(h => String(h || '').trim().toLowerCase());
-        let nameIdx = headers.findIndex(h => h.includes('item') || h.includes('name') || h.includes('cracker') || h.includes('product') || h.includes('description'));
-        let qtyIdx = headers.findIndex(h => h.includes('qty') || h.includes('quantity') || h.includes('count') || h.includes('boxes'));
-        let priceIdx = headers.findIndex(h => h.includes('rate') || h.includes('price') || h.includes('mrp') || h.includes('cost') || h.includes('amount'));
-
-        if (nameIdx === -1) nameIdx = 0;
-        if (qtyIdx === -1) qtyIdx = 1;
-        if (priceIdx === -1) priceIdx = 2;
-
-        const extracted = [];
-        for (let r = 1; r < rawRows.length; r++) {
-          const row = rawRows[r];
-          if (!row || !row[nameIdx]) continue;
-          const name = String(row[nameIdx]).trim();
-          const quantity = Math.max(0, parseInt(row[qtyIdx], 10) || 1);
-          const price = Math.max(0, parseFloat(row[priceIdx]) || 0);
-
-          if (name) {
-            extracted.push({
-              name,
-              quantity,
-              price,
-              unit: 'box',
-              category: 'General'
-            });
-          }
-        }
-
-        if (extracted.length === 0) {
-          throw new Error('No cracker records could be extracted from this spreadsheet.');
-        }
-
-        setReviewItems(extracted);
-      } else if (fileName.endsWith('.docx') || fileName.endsWith('.doc')) {
-        // Extract text in the browser using Mammoth, then send text to Edge Function
-        try {
-          const arrayBuffer = await file.arrayBuffer();
-          const mammothResult = await mammoth.extractRawText({ arrayBuffer });
-          const extractedText = mammothResult?.value || '';
-
-          if (!extractedText.trim()) {
-            throw new Error('Could not extract any readable text from this Word document.');
-          }
-
-          if (isSupabaseConfigured && supabase) {
-            const { data, error } = await supabase.functions.invoke('parse-stock-list', {
-              body: {
-                text: extractedText,
-                fileName: file.name
-              }
-            });
-
-            if (error) {
-              let realErrMsg = error.message;
-              if (error.context) {
-                try {
-                  const errJson = await error.context.json();
-                  if (errJson?.error) realErrMsg = errJson.error;
-                } catch {
-                  try {
-                    const text = await error.context.text();
-                    if (text) realErrMsg = text;
-                  } catch {}
-                }
-              }
-              throw new Error(realErrMsg);
-            }
-
-            if (data?.items && Array.isArray(data.items)) {
-              setReviewItems(data.items);
-            } else {
-              throw new Error('Invalid response format from Gemini document parser.');
-            }
-          } else {
-            throw new Error('Supabase is not configured. Please check environment variables.');
-          }
-        } catch (docxErr) {
-          setUploadError('Word parser error: ' + (docxErr.message || String(docxErr)));
-        } finally {
-          setUploadLoading(false);
-        }
-        return;
-      } else if (fileName.endsWith('.pdf') || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') || fileName.endsWith('.png')) {
-        // Send PDF / image as base64 to Supabase Edge Function
-        const reader = new FileReader();
-        reader.onload = async () => {
-          try {
-            const base64Data = reader.result.split(',')[1];
-            const mimeType = file.type || (fileName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
-
-            if (isSupabaseConfigured && supabase) {
-              const { data, error } = await supabase.functions.invoke('parse-stock-list', {
-                body: {
-                  fileBase64: base64Data,
-                  mimeType,
-                  fileName: file.name
-                }
-              });
-
-              if (error) {
-                let realErrMsg = error.message;
-                if (error.context) {
-                  try {
-                    const errJson = await error.context.json();
-                    if (errJson?.error) realErrMsg = errJson.error;
-                  } catch {
-                    try {
-                      const text = await error.context.text();
-                      if (text) realErrMsg = text;
-                    } catch {}
-                  }
-                }
-                throw new Error(realErrMsg);
-              }
-
-              if (data?.items && Array.isArray(data.items)) {
-                setReviewItems(data.items);
-              } else {
-                throw new Error('Invalid response format from Gemini document parser.');
-              }
-            } else {
-              throw new Error('Supabase is not configured. Please check environment variables.');
-            }
-          } catch (fnErr) {
-            setUploadError('Gemini reading error: ' + (fnErr.message || 'Please ensure GEMINI_API_KEY is configured in Supabase Edge Function'));
-          } finally {
-            setUploadLoading(false);
-          }
-        };
-        reader.readAsDataURL(file);
-        return;
-      } else {
-        throw new Error('Unsupported format. Please upload an Excel (.xlsx, .xls), CSV, Word (.docx), or PDF file.');
+      // 1. Unsupported legacy binary Word format
+      if (fileName.endsWith('.doc')) {
+        throw new Error("The legacy Word format '.doc' is not supported directly. Please open it in Microsoft Word or Google Docs and save it as .docx, .xlsx, or PDF before uploading.");
       }
+
+      // 2. Excel (.xlsx, .xls) and CSV -> Direct browser parse
+      if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls') || fileName.endsWith('.csv')) {
+        setUploadProgressMsg('Reading spreadsheet directly in browser...');
+        rawExtractedItems = await parseExcelOrCsv(file);
+      }
+      // 3. Word (.docx) -> Local table extraction or Gemini text parsing
+      else if (fileName.endsWith('.docx')) {
+        setUploadProgressMsg('Reading Word document...');
+        const res = await parseWordDocument(file);
+        if (res.items && Array.isArray(res.items)) {
+          rawExtractedItems = res.items;
+        } else if (res.needsAI) {
+          setUploadProgressMsg('Analyzing Word text with Gemini AI...');
+          rawExtractedItems = await invokeGeminiParserWithRetry({
+            text: res.text,
+            fileName: file.name,
+            onProgress: setUploadProgressMsg
+          });
+        }
+      }
+      // 4. PDF (.pdf) -> Local pdf.js text or Gemini OCR
+      else if (fileName.endsWith('.pdf')) {
+        setUploadProgressMsg('Reading PDF document in browser...');
+        const res = await parsePdfDocument(file);
+        if (res.items && Array.isArray(res.items)) {
+          rawExtractedItems = res.items;
+        } else if (res.isScannedPdf) {
+          setUploadProgressMsg('Scanned PDF detected. Reading with Gemini AI OCR...');
+          const base64Data = await fileToBase64(file);
+          rawExtractedItems = await invokeGeminiParserWithRetry({
+            fileBase64: base64Data,
+            mimeType: 'application/pdf',
+            fileName: file.name,
+            onProgress: setUploadProgressMsg
+          });
+        } else if (res.needsAI && res.text) {
+          setUploadProgressMsg('Analyzing PDF content with Gemini AI...');
+          rawExtractedItems = await invokeGeminiParserWithRetry({
+            text: res.text,
+            fileName: file.name,
+            onProgress: setUploadProgressMsg
+          });
+        }
+      }
+      // 5. Scanned Images (.jpg, .jpeg, .png) -> Gemini OCR
+      else if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') || fileName.endsWith('.png')) {
+        setUploadProgressMsg('Analyzing photo / invoice with Gemini AI...');
+        const base64Data = await fileToBase64(file);
+        const mimeType = file.type || (fileName.endsWith('.png') ? 'image/png' : 'image/jpeg');
+        rawExtractedItems = await invokeGeminiParserWithRetry({
+          fileBase64: base64Data,
+          mimeType,
+          fileName: file.name,
+          onProgress: setUploadProgressMsg
+        });
+      }
+      // 6. Plain Text (.txt) -> Direct browser parse or Gemini text
+      else if (fileName.endsWith('.txt')) {
+        setUploadProgressMsg('Reading text file in browser...');
+        const res = await parsePlainText(file);
+        if (res.items && Array.isArray(res.items)) {
+          rawExtractedItems = res.items;
+        } else if (res.needsAI) {
+          setUploadProgressMsg('Analyzing text list with Gemini AI...');
+          rawExtractedItems = await invokeGeminiParserWithRetry({
+            text: res.text,
+            fileName: file.name,
+            onProgress: setUploadProgressMsg
+          });
+        }
+      }
+      // 7. Unsupported format
+      else {
+        const ext = file.name.includes('.') ? file.name.split('.').pop() : 'unknown';
+        throw new Error(`The file type '.${ext}' is not supported. Please save your file as .docx, .xlsx, or PDF before uploading.`);
+      }
+
+      if (!rawExtractedItems || rawExtractedItems.length === 0) {
+        throw new Error('No cracker records could be found in the uploaded file.');
+      }
+
+      // Map raw extracted items, matching against current Supabase products
+      const mapped = rawExtractedItems.map((item) => {
+        const cleanItemName = String(item.name || '').trim();
+        // Match case-insensitively, ignoring extra spaces
+        const existing = products.find(p => 
+          p.name.trim().toLowerCase() === cleanItemName.toLowerCase()
+        );
+
+        return {
+          name: cleanItemName,
+          category: item.category || guessCategory(cleanItemName),
+          quantity: Math.max(0, parseInt(item.quantity, 10) || 0),
+          price: Math.max(0, parseFloat(item.price) || 0),
+          unit: item.unit ? String(item.unit).toLowerCase().trim() : 'box',
+          isExisting: Boolean(existing),
+          existingProduct: existing || null,
+          dupAction: duplicateAction // default 'add' or 'skip'
+        };
+      });
+
+      setReviewItems(mapped);
     } catch (err) {
-      setUploadError(err.message);
+      console.error('File parsing error:', err);
+      const isBusy = (
+        err.isAiBusy ||
+        err.status === 429 ||
+        err.status === 503 ||
+        /busy|503|429|timeout|overloaded|resource exhausted/i.test(err.message || '')
+      );
+
+      if (isBusy) {
+        setUploadErrorObj({
+          friendly: 'The AI service is temporarily busy. Please click "Try again" or upload an Excel, CSV, or Word file.',
+          raw: err.rawDetails || err.message || String(err),
+          canRetry: true
+        });
+      } else {
+        setUploadErrorObj({
+          friendly: err.message || 'Failed to process document.',
+          raw: err.rawDetails || err.message || String(err),
+          canRetry: false
+        });
+      }
     } finally {
       setUploadLoading(false);
+      setUploadProgressMsg('');
     }
   }
 
+  function handleFileUpload(e) {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleProcessFile(file);
+    }
+    // reset input so uploading same file again triggers onChange
+    e.target.value = '';
+  }
+
+  function handleSetGlobalDuplicateAction(action) {
+    setDuplicateAction(action);
+    setReviewItems(prev => prev.map(item => {
+      if (item.isExisting) {
+        return { ...item, dupAction: action };
+      }
+      return item;
+    }));
+  }
+
+  function handleToggleRowDuplicateAction(idx, action) {
+    setReviewItems(prev => {
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], dupAction: action };
+      return copy;
+    });
+  }
+
+  function handleUpdateReviewItem(idx, field, value) {
+    setReviewItems(prev => {
+      const copy = [...prev];
+      const item = { ...copy[idx], [field]: value };
+
+      // If user edits name, re-check duplicate status against existing products
+      if (field === 'name') {
+        const cleanName = String(value || '').trim();
+        const existing = products.find(p => 
+          p.name.trim().toLowerCase() === cleanName.toLowerCase()
+        );
+        item.isExisting = Boolean(existing);
+        item.existingProduct = existing || null;
+      }
+
+      copy[idx] = item;
+      return copy;
+    });
+  }
+
+  function handleRemoveReviewItem(idx) {
+    setReviewItems(prev => prev.filter((_, i) => i !== idx));
+  }
+
   // ----------------------------------------------------
-  // CONFIRM & SAVE REVIEWED ITEMS TO STOCK
+  // CONFIRM & BATCH IMPORT REVIEWED ITEMS TO SUPABASE
   // ----------------------------------------------------
   async function handleConfirmReviewItems() {
     if (reviewItems.length === 0) return;
 
+    // Filter valid non-empty items
+    const validItems = reviewItems.filter(item => item.name && item.name.trim());
+    if (validItems.length === 0) {
+      setImportError('Please enter at least one valid cracker name.');
+      return;
+    }
+
+    const itemsToImport = validItems.filter(item => !item.isExisting || item.dupAction === 'add');
+    if (itemsToImport.length === 0) {
+      setImportError('All items are set to "Skip". Change at least one existing item to "Add to existing quantity" or add new crackers.');
+      return;
+    }
+
+    setIsImporting(true);
+    setImportError('');
+
     try {
-      for (const item of reviewItems) {
-        if (!item.name || !item.name.trim()) continue;
+      // 1. Separate new items vs existing items to update
+      const newItems = validItems.filter(item => !item.isExisting);
+      const existingItemsToUpdate = validItems.filter(item => item.isExisting && item.dupAction === 'add');
 
-        // Check if cracker exists by name (case-insensitive)
-        const existing = products.find(p => p.name.trim().toLowerCase() === item.name.trim().toLowerCase());
-
-        if (existing) {
-          if (duplicateAction === 'add') {
-            const addedQty = Math.max(0, parseInt(item.quantity, 10) || 0);
-            await updateProduct(existing.id, {
-              quantity: (existing.quantity || 0) + addedQty,
-              price: item.price ? parseFloat(item.price) : existing.price
-            });
-          }
-        } else {
-          await addProduct({
-            name: item.name.trim(),
-            category: item.category || 'General',
-            price: parseFloat(item.price) || 0,
-            quantity: Math.max(0, parseInt(item.quantity, 10) || 0),
-            unit: item.unit || 'box',
-            low_stock_level: 10,
-            video_url: '',
-            qr_code: `CRK-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 1000)}`
-          });
-        }
+      // 2. Batch insert new items into Supabase
+      if (newItems.length > 0) {
+        await addProductsBatch(newItems);
       }
 
-      setIsUploadModalOpen(false);
+      // 3. Update existing items in Supabase
+      for (const item of existingItemsToUpdate) {
+        const existing = item.existingProduct;
+        const addQty = Math.max(0, parseInt(item.quantity, 10) || 0);
+        const newQty = (existing.quantity || 0) + addQty;
+        const newPrice = item.price > 0 ? parseFloat(item.price) : existing.price;
+
+        await updateProduct(existing.id, {
+          quantity: newQty,
+          price: newPrice
+        });
+      }
+
+      const totalImported = newItems.length + existingItemsToUpdate.length;
+      setBulkDeleteSuccess(`Successfully imported ${totalImported} ${totalImported === 1 ? 'cracker' : 'crackers'} into stock!`);
+      setTimeout(() => setBulkDeleteSuccess(''), 5000);
+
+      // Reset and close
       setReviewItems([]);
-      alert(`Stock successfully updated with ${reviewItems.length} items!`);
+      setUploadErrorObj(null);
+      setIsUploadModalOpen(false);
+
       if (onRefresh) onRefresh();
     } catch (err) {
-      alert('Error saving imported items: ' + err.message);
+      console.error('Import error:', err);
+      // Keep review table open so user does not lose their edits!
+      setImportError(`Database error during import: ${err.message || String(err)}`);
+    } finally {
+      setIsImporting(false);
     }
   }
 
@@ -418,6 +485,17 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       .filter(p => selectedIds.includes(p.id))
       .map(p => p.name);
   }, [products, selectedIds]);
+
+  // Statistics and highlights for review modal
+  const reviewStats = useMemo(() => {
+    const total = reviewItems.length;
+    const newCount = reviewItems.filter(i => !i.isExisting).length;
+    const existingCount = reviewItems.filter(i => i.isExisting).length;
+    const activeImportCount = reviewItems.filter(i => !i.isExisting || i.dupAction === 'add').length;
+    const skippedCount = reviewItems.filter(i => i.isExisting && i.dupAction === 'skip').length;
+    const warningCount = reviewItems.filter(i => !i.price || i.price === 0 || !i.quantity || i.quantity === 0).length;
+    return { total, newCount, existingCount, activeImportCount, skippedCount, warningCount };
+  }, [reviewItems]);
 
   return (
     <div className="flex flex-col gap-5 max-w-7xl mx-auto w-full">
@@ -1264,188 +1342,388 @@ export default function Stock({ products = [], onRefresh, setActivePage }) {
       )}
 
       {/* ---------------------------------------------------- */}
-      {/* UPLOAD & REVIEW MODAL (EXCEL / PDF / WORD)           */}
+      {/* UPLOAD & REVIEW MODAL (EXCEL / CSV / PDF / WORD / IMG) */}
       {/* ---------------------------------------------------- */}
       {isUploadModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl bg-light-surface-container-lowest border-2 border-gold-border rounded-lg shadow-2xl p-5 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-light-outline-variant pb-2.5">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-gold text-[24px]">upload_file</span>
-                <h3 className="font-headline text-lg font-bold text-light-on-surface">
-                  Upload Stock List (Excel, CSV, PDF, or Word)
-                </h3>
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4">
+          <div className="w-full max-w-4xl bg-light-surface-container-lowest border-2 border-gold-border rounded-xl shadow-2xl p-4 sm:p-6 flex flex-col gap-4 max-h-[92vh]">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-light-outline-variant pb-3 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <span className="material-symbols-outlined text-gold text-[26px]">upload_file</span>
+                <div>
+                  <h3 className="font-headline text-base sm:text-lg font-bold text-light-on-surface">
+                    {reviewItems.length > 0 ? `Review & Confirm Imported Stock (${reviewItems.length})` : 'Upload Stock List'}
+                  </h3>
+                  <p className="font-body text-xs text-light-on-surface-variant">
+                    {reviewItems.length > 0 
+                      ? 'Review cracker details, adjust quantities or pricing, and confirm before adding to database' 
+                      : 'Upload Excel (.xlsx, .xls), CSV, Word (.docx), PDF (text or scanned), or photo invoice'}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsUploadModalOpen(false)}
-                className="w-8 h-8 rounded inline-flex items-center justify-center text-light-on-surface-variant hover:bg-light-surface-container"
+                onClick={() => {
+                  if (reviewItems.length > 0) {
+                    if (window.confirm('Discard imported items and close?')) {
+                      setReviewItems([]);
+                      setUploadErrorObj(null);
+                      setIsUploadModalOpen(false);
+                    }
+                  } else {
+                    setUploadErrorObj(null);
+                    setIsUploadModalOpen(false);
+                  }
+                }}
+                disabled={uploadLoading || isImporting}
+                className="w-8 h-8 rounded inline-flex items-center justify-center text-light-on-surface-variant hover:bg-light-surface-container disabled:opacity-40"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             </div>
 
-            {/* Drop / Select zone */}
-            <div className="p-5 rounded-lg border-2 border-dashed border-gold-border bg-gold-soft/50 text-center flex flex-col items-center gap-2">
-              <span className="material-symbols-outlined text-deep-green text-[36px]">folder_open</span>
-              <p className="font-title text-sm font-bold text-deep-green">
-                Choose stock invoice or supplier file
-              </p>
-              <p className="font-body text-xs text-light-on-surface-variant max-w-md">
-                Excel & CSV are parsed directly; PDF and Word are read using Gemini AI through the Supabase Edge Function.
-              </p>
-              <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 rounded-md bg-deep-green text-white font-label text-xs font-bold hover:opacity-95 shadow-xs mt-1">
-                <span className="material-symbols-outlined text-[18px]">attachment</span>
-                <span>Select Document File</span>
-                <input
-                  type="file"
-                  accept=".xlsx, .xls, .csv, .pdf, .docx, .doc"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                  disabled={uploadLoading}
-                />
-              </label>
-            </div>
+            {/* Drop / Select zone (Visible when no review items are loaded) */}
+            {reviewItems.length === 0 && (
+              <div className="flex flex-col gap-3 py-2">
+                <div className="p-6 sm:p-8 rounded-xl border-2 border-dashed border-gold-border bg-gold-soft/40 text-center flex flex-col items-center gap-2.5">
+                  <div className="w-14 h-14 rounded-full bg-light-primary-container text-deep-green flex items-center justify-center shadow-xs">
+                    <span className="material-symbols-outlined text-[32px]">folder_open</span>
+                  </div>
+                  <div>
+                    <p className="font-headline text-sm sm:text-base font-bold text-deep-green">
+                      Select stock list file or drag & drop here
+                    </p>
+                    <p className="font-body text-xs text-light-on-surface-variant max-w-lg mt-1 leading-relaxed">
+                      Excel (.xlsx, .xls) and CSV are parsed instantly in your browser.<br className="hidden sm:inline" /> Word (.docx) tables & clean PDFs are extracted directly; scanned PDFs and images are processed with Gemini AI.
+                    </p>
+                  </div>
 
-            {uploadLoading && (
-              <div className="py-6 flex flex-col items-center justify-center gap-2 text-deep-green">
-                <span className="material-symbols-outlined animate-spin text-[32px]">progress_activity</span>
-                <span className="font-label text-xs font-bold">Analyzing document & extracting crackers...</span>
-              </div>
-            )}
+                  <label className={`mt-2 inline-flex items-center gap-2 min-h-[44px] px-5 py-2.5 rounded-lg bg-deep-green text-white font-label text-xs sm:text-sm font-bold shadow-sm transition-all ${
+                    uploadLoading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:opacity-90 active:scale-98'
+                  }`}>
+                    <span className="material-symbols-outlined text-[20px]">attachment</span>
+                    <span>Choose File from Computer / Phone</span>
+                    <input
+                      type="file"
+                      accept=".xlsx, .xls, .csv, .docx, .doc, .pdf, .jpg, .jpeg, .png, .txt"
+                      onChange={handleFileUpload}
+                      className="hidden"
+                      disabled={uploadLoading}
+                    />
+                  </label>
+                  <span className="font-body text-[11px] text-light-on-surface-variant">
+                    Supported formats: .xlsx, .xls, .csv, .docx, .pdf, .jpg, .png, .txt
+                  </span>
+                </div>
 
-            {uploadError && (
-              <div className="p-3 rounded-md bg-red-soft text-bright-red border border-bright-red/30 font-label text-xs font-bold">
-                {uploadError}
+                {/* Progress message during extraction */}
+                {uploadLoading && (
+                  <div className="py-6 flex flex-col items-center justify-center gap-2.5 text-deep-green animate-in fade-in">
+                    <span className="material-symbols-outlined animate-spin text-[36px]">progress_activity</span>
+                    <span className="font-label text-xs sm:text-sm font-bold text-deep-green">
+                      {uploadProgressMsg || 'Reading your file...'}
+                    </span>
+                    <span className="font-body text-[11px] text-light-on-surface-variant">
+                      Please wait a moment while the crackers are extracted and verified
+                    </span>
+                  </div>
+                )}
+
+                {/* Friendly Error with Retry option */}
+                {uploadErrorObj && (
+                  <div className="p-4 rounded-lg bg-red-soft text-bright-red border border-bright-red/30 flex flex-col gap-2 shadow-xs animate-in fade-in">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-2.5">
+                        <span className="material-symbols-outlined text-[22px] shrink-0 text-bright-red mt-0.5">error</span>
+                        <div className="flex flex-col gap-1">
+                          <p className="font-label text-xs sm:text-sm font-bold text-bright-red">
+                            {uploadErrorObj.friendly}
+                          </p>
+                          {uploadErrorObj.canRetry && lastUploadedFile && (
+                            <button
+                              type="button"
+                              onClick={() => handleProcessFile(lastUploadedFile)}
+                              className="mt-1 self-start inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1 rounded-md bg-bright-red text-white font-label text-xs font-bold hover:opacity-90 shadow-xs"
+                            >
+                              <span className="material-symbols-outlined text-[16px]">refresh</span>
+                              <span>Try Again</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setUploadErrorObj(null)}
+                        className="text-bright-red hover:opacity-75"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">close</span>
+                      </button>
+                    </div>
+
+                    {uploadErrorObj.raw && uploadErrorObj.raw !== uploadErrorObj.friendly && (
+                      <details className="mt-1 pt-2 border-t border-bright-red/20 text-xs">
+                        <summary className="cursor-pointer font-label text-[11px] text-bright-red font-semibold select-none">
+                          Show technical details
+                        </summary>
+                        <pre className="p-2.5 bg-white/80 rounded mt-1.5 font-mono text-[10px] text-light-on-surface break-words max-h-32 overflow-y-auto whitespace-pre-wrap">
+                          {uploadErrorObj.raw}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
             {/* Review & Edit Table */}
             {reviewItems.length > 0 && (
-              <div className="flex flex-col gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 bg-light-primary-container p-2.5 rounded-md">
-                  <span className="font-label text-xs font-bold text-deep-green">
-                    Extracted {reviewItems.length} items. Review and edit values before confirming:
-                  </span>
-                  
-                  {/* Handling for existing items */}
-                  <div className="flex items-center gap-2 text-xs font-label">
-                    <span className="text-deep-green font-bold">If item exists:</span>
-                    <label className="inline-flex items-center gap-1 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="dupAction"
-                        checked={duplicateAction === 'add'}
-                        onChange={() => setDuplicateAction('add')}
-                        className="text-gold"
-                      />
-                      <span>Add to quantity</span>
-                    </label>
-                    <label className="inline-flex items-center gap-1 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="dupAction"
-                        checked={duplicateAction === 'skip'}
-                        onChange={() => setDuplicateAction('skip')}
-                        className="text-gold"
-                      />
-                      <span>Skip</span>
-                    </label>
+              <div className="flex flex-col gap-3 min-h-0 flex-1">
+                {/* Stats and Resolution Controls Header */}
+                <div className="p-3 bg-light-primary-container/80 border border-gold-border rounded-lg flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-label text-xs sm:text-sm font-bold text-deep-green">
+                      Found {reviewStats.total} crackers:
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-white border border-light-outline-variant font-mono text-xs font-bold text-deep-green">
+                      {reviewStats.newCount} New
+                    </span>
+                    {reviewStats.existingCount > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-gold-soft border border-gold-border font-mono text-xs font-bold text-on-gold">
+                        {reviewStats.existingCount} Already in Stock
+                      </span>
+                    )}
+                    {reviewStats.warningCount > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 font-label text-xs font-bold flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[14px]">warning</span>
+                        {reviewStats.warningCount} Missing Price/Qty
+                      </span>
+                    )}
                   </div>
+
+                  {/* Duplicate Resolution Setting for all existing crackers */}
+                  {reviewStats.existingCount > 0 && (
+                    <div className="flex items-center gap-2 text-xs font-label bg-white px-3 py-1.5 rounded-md border border-light-outline-variant">
+                      <span className="font-bold text-deep-green">For existing items:</span>
+                      <label className="inline-flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="globalDupAction"
+                          checked={duplicateAction === 'add'}
+                          onChange={() => handleSetGlobalDuplicateAction('add')}
+                          className="text-deep-green accent-deep-green"
+                        />
+                        <span className="font-medium">Add to quantity</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="globalDupAction"
+                          checked={duplicateAction === 'skip'}
+                          onChange={() => handleSetGlobalDuplicateAction('skip')}
+                          className="text-deep-green accent-deep-green"
+                        />
+                        <span className="font-medium">Skip</span>
+                      </label>
+                    </div>
+                  )}
                 </div>
 
-                <div className="overflow-x-auto border border-gold-border rounded-md max-h-60 overflow-y-auto">
+                {importError && (
+                  <div className="p-3 rounded-md bg-red-soft text-bright-red border border-bright-red/30 font-label text-xs font-bold flex items-center justify-between gap-2 shrink-0">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px]">error</span>
+                      <span>{importError}</span>
+                    </div>
+                    <button type="button" onClick={() => setImportError('')} className="text-bright-red hover:opacity-75">
+                      <span className="material-symbols-outlined text-[16px]">close</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Review Table (Scrollable container for 100+ items) */}
+                <div className="overflow-x-auto border border-gold-border rounded-lg flex-1 min-h-[240px] max-h-[50vh] overflow-y-auto shadow-inner bg-white">
                   <table className="w-full text-left border-collapse text-xs">
-                    <thead className="bg-light-surface-container-low text-light-on-surface border-b border-light-outline-variant sticky top-0">
+                    <thead className="bg-light-primary-container text-deep-green border-b border-gold-border sticky top-0 z-10 shadow-xs">
                       <tr>
-                        <th className="px-3 py-2 font-label font-bold">#</th>
-                        <th className="px-3 py-2 font-label font-bold">Detected Name</th>
-                        <th className="px-3 py-2 text-right font-label font-bold">Quantity</th>
-                        <th className="px-3 py-2 text-right font-label font-bold">Price (₹)</th>
-                        <th className="px-3 py-2 text-center font-label font-bold">Remove</th>
+                        <th className="px-2.5 py-2.5 font-label font-bold w-10 text-center">#</th>
+                        <th className="px-3 py-2.5 font-label font-bold min-w-[200px]">Cracker Name</th>
+                        <th className="px-2.5 py-2.5 font-label font-bold min-w-[120px]">Category</th>
+                        <th className="px-2.5 py-2.5 text-right font-label font-bold w-24">Quantity</th>
+                        <th className="px-2.5 py-2.5 font-label font-bold w-24">Unit</th>
+                        <th className="px-2.5 py-2.5 text-right font-label font-bold w-28">Price (₹)</th>
+                        <th className="px-3 py-2.5 font-label font-bold min-w-[140px]">Status / Action</th>
+                        <th className="px-2 py-2.5 text-center font-label font-bold w-12">Remove</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-light-outline-variant">
-                      {reviewItems.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-gold-soft/30">
-                          <td className="px-3 py-2 font-mono text-light-on-surface-variant">{idx + 1}</td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="text"
-                              value={item.name}
-                              onChange={(e) => {
-                                const copy = [...reviewItems];
-                                copy[idx].name = e.target.value;
-                                setReviewItems(copy);
-                              }}
-                              className="w-full px-2 py-1 rounded border border-light-outline-variant font-title font-medium"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right">
-                            <input
-                              type="number"
-                              min="0"
-                              value={item.quantity}
-                              onChange={(e) => {
-                                const copy = [...reviewItems];
-                                copy[idx].quantity = e.target.value;
-                                setReviewItems(copy);
-                              }}
-                              className="w-20 px-2 py-1 rounded border border-light-outline-variant font-mono text-right ml-auto block"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right">
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={item.price}
-                              onChange={(e) => {
-                                const copy = [...reviewItems];
-                                copy[idx].price = e.target.value;
-                                setReviewItems(copy);
-                              }}
-                              className="w-24 px-2 py-1 rounded border border-light-outline-variant font-mono text-right ml-auto block"
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setReviewItems(reviewItems.filter((_, i) => i !== idx));
-                              }}
-                              className="w-7 h-7 rounded text-bright-red hover:bg-red-soft inline-flex items-center justify-center"
-                            >
-                              <span className="material-symbols-outlined text-[16px]">delete</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {reviewItems.map((item, idx) => {
+                        const isSkipped = item.isExisting && item.dupAction === 'skip';
+                        const isZeroQty = !item.quantity || parseInt(item.quantity, 10) === 0;
+                        const isZeroPrice = !item.price || parseFloat(item.price) === 0;
+
+                        return (
+                          <tr 
+                            key={idx} 
+                            className={`transition-colors ${
+                              isSkipped 
+                                ? 'bg-light-surface-container-low opacity-60' 
+                                : item.isExisting 
+                                  ? 'bg-gold-soft/30 hover:bg-gold-soft/50' 
+                                  : 'hover:bg-gold-soft/20'
+                            }`}
+                          >
+                            <td className="px-2.5 py-2 font-mono text-center text-light-on-surface-variant tabular-nums">
+                              {idx + 1}
+                            </td>
+
+                            <td className="px-3 py-2">
+                              <input
+                                type="text"
+                                value={item.name}
+                                onChange={(e) => handleUpdateReviewItem(idx, 'name', e.target.value)}
+                                placeholder="Cracker name"
+                                className="w-full px-2.5 py-1.5 rounded border border-light-outline-variant font-title text-xs font-semibold text-light-on-surface focus:ring-1 focus:ring-gold bg-white"
+                              />
+                              {item.isExisting && (
+                                <p className="font-body text-[10px] text-deep-green mt-0.5">
+                                  In stock: <strong>{item.existingProduct.quantity} {item.existingProduct.unit}</strong> @ ₹{item.existingProduct.price}
+                                </p>
+                              )}
+                            </td>
+
+                            <td className="px-2.5 py-2">
+                              <input
+                                type="text"
+                                value={item.category}
+                                onChange={(e) => handleUpdateReviewItem(idx, 'category', e.target.value)}
+                                placeholder="Category"
+                                className="w-full px-2 py-1.5 rounded border border-light-outline-variant font-body text-xs text-light-on-surface bg-white"
+                              />
+                            </td>
+
+                            <td className="px-2.5 py-2 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                value={item.quantity}
+                                onChange={(e) => handleUpdateReviewItem(idx, 'quantity', e.target.value)}
+                                className={`w-20 px-2 py-1.5 rounded border font-mono text-right text-xs ml-auto block bg-white ${
+                                  isZeroQty ? 'border-amber-500 bg-amber-50/70 text-amber-900 font-bold' : 'border-light-outline-variant'
+                                }`}
+                              />
+                            </td>
+
+                            <td className="px-2.5 py-2">
+                              <select
+                                value={item.unit}
+                                onChange={(e) => handleUpdateReviewItem(idx, 'unit', e.target.value)}
+                                className="w-full px-1.5 py-1.5 rounded border border-light-outline-variant font-body text-xs bg-white"
+                              >
+                                <option value="box">box</option>
+                                <option value="packet">packet</option>
+                                <option value="piece">piece</option>
+                              </select>
+                            </td>
+
+                            <td className="px-2.5 py-2 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.price}
+                                onChange={(e) => handleUpdateReviewItem(idx, 'price', e.target.value)}
+                                className={`w-24 px-2 py-1.5 rounded border font-mono text-right text-xs ml-auto block bg-white ${
+                                  isZeroPrice ? 'border-amber-500 bg-amber-50/70 text-amber-900 font-bold' : 'border-light-outline-variant'
+                                }`}
+                              />
+                            </td>
+
+                            <td className="px-3 py-2">
+                              {item.isExisting ? (
+                                <select
+                                  value={item.dupAction}
+                                  onChange={(e) => handleToggleRowDuplicateAction(idx, e.target.value)}
+                                  className={`px-2 py-1 rounded text-xs font-label font-bold border ${
+                                    item.dupAction === 'add' 
+                                      ? 'bg-light-primary-container text-deep-green border-deep-green/40' 
+                                      : 'bg-light-surface-container text-light-on-surface-variant border-light-outline-variant'
+                                  }`}
+                                >
+                                  <option value="add">Add (+{item.quantity})</option>
+                                  <option value="skip">Skip</option>
+                                </select>
+                              ) : (
+                                <span className="px-2.5 py-1 rounded-full bg-light-primary-container text-deep-green border border-deep-green/30 font-label text-[10px] font-bold inline-block">
+                                  New Cracker
+                                </span>
+                              )}
+                            </td>
+
+                            <td className="px-2 py-2 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveReviewItem(idx)}
+                                className="w-8 h-8 rounded text-bright-red hover:bg-red-soft inline-flex items-center justify-center transition-colors"
+                                title="Remove cracker from import list"
+                              >
+                                <span className="material-symbols-outlined text-[18px]">delete</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
 
-                <div className="flex items-center justify-between pt-2 border-t border-light-outline-variant">
-                  <span className="text-xs text-light-on-surface-variant font-body">
-                    Nothing is saved until you click Confirm below.
-                  </span>
-                  <div className="flex gap-2">
+                {/* Footer Controls */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-light-outline-variant shrink-0">
+                  <div className="flex flex-col">
+                    <span className="font-label text-xs font-bold text-light-on-surface">
+                      Importing {reviewStats.activeImportCount} of {reviewStats.total} crackers
+                      {reviewStats.skippedCount > 0 && (
+                        <span className="text-light-on-surface-variant font-normal ml-1">
+                          ({reviewStats.skippedCount} skipped)
+                        </span>
+                      )}
+                    </span>
+                    <span className="font-body text-[11px] text-light-on-surface-variant">
+                      Nothing is saved until you click the Import button.
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         setReviewItems([]);
+                        setUploadErrorObj(null);
                         setIsUploadModalOpen(false);
                       }}
-                      className="px-4 py-2 rounded-md border border-gold-border font-label text-xs font-bold"
+                      disabled={isImporting}
+                      className="min-h-10 px-4 rounded-md border border-light-outline-variant font-label text-xs font-bold text-light-on-surface hover:bg-light-surface-container transition-colors disabled:opacity-50"
                     >
                       Cancel
                     </button>
+
                     <button
                       type="button"
                       onClick={handleConfirmReviewItems}
-                      className="px-5 py-2 rounded-md bg-gold text-on-gold border border-gold-border font-label text-xs font-bold hover:opacity-90 shadow-sm"
+                      disabled={isImporting || reviewStats.activeImportCount === 0}
+                      className="min-h-10 px-5 rounded-md bg-gold text-on-gold border border-gold-border font-label text-xs font-bold hover:opacity-90 active:scale-98 transition-all flex items-center gap-2 shadow-sm disabled:opacity-50"
                     >
-                      Confirm & Save Stock ({reviewItems.length} items)
+                      {isImporting ? (
+                        <>
+                          <span className="material-symbols-outlined animate-spin text-[16px]">progress_activity</span>
+                          <span>Importing to Supabase...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="material-symbols-outlined text-[18px]">cloud_upload</span>
+                          <span>Import {reviewStats.activeImportCount} Crackers</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>

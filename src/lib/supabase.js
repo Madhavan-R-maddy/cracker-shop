@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : (typeof process !== 'undefined' && process.env) ? process.env : {};
+const supabaseUrl = env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl && 
@@ -146,6 +147,38 @@ export async function addProduct(product) {
   if (error) {
     console.error('Failed to add product:', error);
     throw new Error(`Error creating product: ${error.message}`);
+  }
+
+  return data;
+}
+
+/**
+ * Batch insert multiple new crackers into Supabase products table.
+ */
+export async function addProductsBatch(productsList) {
+  assertSupabase();
+  if (!productsList || productsList.length === 0) return [];
+
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const formatted = productsList.map((p, idx) => ({
+    name: p.name.trim(),
+    category: p.category || 'General',
+    price: Math.max(0, parseFloat(p.price) || 0),
+    quantity: Math.max(0, parseInt(p.quantity, 10) || 0),
+    unit: p.unit || 'box',
+    low_stock_level: Math.max(0, parseInt(p.low_stock_level, 10) || 10),
+    video_url: p.video_url || '',
+    qr_code: p.qr_code || `CRK-${timestamp}-${idx}-${Math.floor(Math.random() * 10000)}`
+  }));
+
+  const { data, error } = await supabase
+    .from('products')
+    .insert(formatted)
+    .select();
+
+  if (error) {
+    console.error('Failed to batch insert products:', error);
+    throw new Error(`Error importing new crackers: ${error.message}`);
   }
 
   return data;

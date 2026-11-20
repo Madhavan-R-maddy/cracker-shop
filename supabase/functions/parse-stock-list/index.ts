@@ -32,12 +32,13 @@ serve(async (req: Request) => {
     const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") || "gemini-2.5-flash";
 
     const body = await req.json();
-    const { fileBase64, mimeType, fileName, text } = body;
+    const { fileBase64, fileData, mimeType, fileName, text } = body;
+    const actualBase64 = fileBase64 || fileData;
 
-    if (!text && (!fileBase64 || !mimeType)) {
+    if (!text && (!actualBase64 || !mimeType)) {
       return new Response(
         JSON.stringify({ 
-          error: "Missing required document data. Provide either 'text' (extracted from .docx) or 'fileBase64' with 'mimeType' (for PDF/images)." 
+          error: "Missing required document data. Provide either 'text' (extracted from .docx/pdf/txt) or 'fileBase64'/'fileData' with 'mimeType' (for scanned PDF/images)." 
         }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -87,7 +88,7 @@ Do NOT include markdown backticks like \`\`\`json. Return only pure JSON array.
         {
           inlineData: {
             mimeType: mimeType,
-            data: fileBase64,
+            data: actualBase64,
           },
         },
       ];
@@ -122,13 +123,16 @@ Do NOT include markdown backticks like \`\`\`json. Return only pure JSON array.
         errDetail = await geminiRes.text();
       }
 
+      const returnStatus = (geminiRes.status === 429 || geminiRes.status === 503 || geminiRes.status === 504) ? geminiRes.status : 400;
+
       return new Response(
         JSON.stringify({
           error: `Gemini API error using model '${GEMINI_MODEL}' (${geminiRes.status}): ${errDetail}`,
+          status: geminiRes.status,
         }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 400,
+          status: returnStatus,
         }
       );
     }
